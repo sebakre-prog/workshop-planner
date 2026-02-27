@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Workshop Planner – Ambit Group × SQS</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Calibri, sans-serif; background: #F5F7FA; }
+  input, textarea, select, button { font-family: inherit; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="module">
+// ── Firebase via ES-Module-Imports (garantiert geladen vor App-Start) ──
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey:            "AIzaSyDc1Dg2LEjjZX4vrr0GVggBN2Q9-MJ9Dt4",
+  authDomain:        "workshop-planner-4ce69.firebaseapp.com",
+  projectId:         "workshop-planner-4ce69",
+  storageBucket:     "workshop-planner-4ce69.firebasestorage.app",
+  messagingSenderId: "990676533945",
+  appId:             "1:990676533945:web:79e2c3df0b5d9244111168"
+};
+
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+// ── React via dynamic import (waits for firebase above) ──────────────
+const [React, ReactDOM] = await Promise.all([
+  import("https://esm.sh/react@18"),
+  import("https://esm.sh/react-dom@18/client"),
+]);
+const { useState, useRef, useCallback, useEffect } = React;
+
+// ── Babel-freies JSX via htm ─────────────────────────────────────────
+const { html } = await import("https://esm.sh/htm/react");
+
+// ─── Constants ───────────────────────────────────────────────────────
+const PX_PER_MIN = 1.5;
+const SNAP = 15;
+const DAY_START = 7 * 60 + 30;
+const DAY_END   = 19 * 60;
+const DAY_MINS  = DAY_END - DAY_START;
+const TIMELINE_H = DAY_MINS * PX_PER_MIN;
+const RULER_W = 44;
+
+const C = {
+  navy:"#1A2B5F", navyLight:"#2A3F7F",
+  gold:"#C8952A", goldLight:"#E8B84B",
+  white:"#FFFFFF", offWhite:"#F5F7FA",
+  text:"#1E293B", muted:"#64748B", border:"#E2E8F0",
+  red:"#DC2626", redBg:"#FEE2E2",
+};
+
+const TYPES = [
+  { v:"tech",   label:"Technisch",       color:"#1A2B5F", bg:"#EEF2FF", stream:"tech" },
+  { v:"org",    label:"Organisatorisch", color:"#C8952A", bg:"#FFF7ED", stream:"org"  },
+  { v:"shared", label:"Gemeinsam",       color:"#1A7A4A", bg:"#F0F9F4", stream:"wide" },
+  { v:"mgmt",   label:"Management",      color:"#92400E", bg:"#FEF3C7", stream:"wide" },
+  { v:"break",  label:"Pause",           color:"#6B7280", bg:"#F3F4F6", stream:"wide" },
+];
+
+const uid = () => Math.random().toString(36).slice(2,9);
+const tinfo = t => TYPES.find(x => x.v === t) || TYPES[0];
+const isWide = s => tinfo(s.type).stream === "wide";
+const toMins = t => { const [h,m] = t.split(":").map(Number); return h*60+m; };
+const fromMins = m => `${String(Math.floor(m/60)).padStart(2,"0")}:${String(m%60).padStart(2,"0")}`;
+const snapTo = m => Math.round(m / SNAP) * SNAP;
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+
+function getConflicts(slots) {
+  const ids = new Set();
+  const ov = (a,b) => {
+    const as=toMins(a.time), ae=as+Number(a.duration);
+    const bs=toMins(b.time), be=bs+Number(b.duration);
+    return as<be && bs<ae;
+  };
+  const sameStream = (a,b) => {
+    if (a.id===b.id) return false;
+    if (isWide(a)||isWide(b)) return true;
+    return a.type===b.type;
+  };
+  for (let i=0;i<slots.length;i++)
+    for (let j=i+1;j<slots.length;j++)
+      if (sameStream(slots[i],slots[j]) && ov(slots[i],slots[j])) {
+        ids.add(slots[i].id); ids.add(slots[j].id);
+      }
+  return ids;
+}
+
+const mkSlot = (type="tech") => ({
+  id:uid(), type, time:"09:00", duration:60,
+  topic:"", goal:"", participants:[], room:"", notes:"",
+});
+
+const mkDay = n => ({
+  id:uid(), label:`Tag ${n}`,
+  slots:[
+    { ...mkSlot("shared"), id:uid(), time:"09:00", topic:"Kickoff & Zielsetzung",   duration:30 },
+    { ...mkSlot("tech"),   id:uid(), time:"09:30", topic:"Technisches Thema 1",     duration:90 },
+    { ...mkSlot("org"),    id:uid(), time:"09:30", topic:"Org. Thema 1",            duration:90 },
+    { ...mkSlot("break"),  id:uid(), time:"12:00", topic:"Mittagspause",            duration:60 },
+    { ...mkSlot("tech"),   id:uid(), time:"13:00", topic:"Technisches Thema 2",     duration:90 },
+    { ...mkSlot("org"),    id:uid(), time:"13:00", topic:"Org. Thema 2",            duration:90 },
+    { ...mkSlot("mgmt"),   id:uid(), time:"16:00", topic:"Daily Touch Point",       duration:30 },
+  ].map(s=>({...s,participants:[]})),
+});
+
+// ── createElement shorthand (replaces JSX) ───────────────────────────
+const e = React.createElement;
+const S = (tag, style, ...children) => e(tag, {style}, ...children);
+
+// ─── ParticipantInput ────────────────────────────────────────────────
+function ParticipantInput({ participants, onChange, knownNames=[] }) {
+  const [val, setVal] = useState("");
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const add = name => {
+    const n = name.trim();
+    if (n && !participants.includes(n)) onChange([...participants, n]);
+    setVal(""); setOpen(false); ref.current?.focus();
+  };
+  const remove = name => onChange(participants.filter(p=>p!==name));
+  const sugg = knownNames.filter(s => !participants.includes(s) && s.toLowerCase().includes(val.toLowerCase()));
+
+  return e("div", {style:{position:"relative"}},
+    e("div", {
+      onClick:()=>ref.current?.focus(),
+      style:{minHeight:42,border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 8px",
+        display:"flex",flexWrap:"wrap",gap:5,background:"#fff",cursor:"text",marginBottom:5}
+    },
+      ...participants.map(p => e("span", {key:p, style:{display:"inline-flex",alignItems:"center",gap:4,
+        background:C.navy,color:"#fff",borderRadius:20,padding:"3px 10px",fontSize:11,fontWeight:600}},
+        p,
+        e("button", {onClick:ev=>{ev.stopPropagation();remove(p);},
+          style:{background:"none",border:"none",color:"rgba(255,255,255,.65)",cursor:"pointer",fontSize:13,padding:0,lineHeight:1}}, "×")
+      )),
+      e("input", {ref, value:val,
+        onChange:ev=>{setVal(ev.target.value);setOpen(true);},
+        onFocus:()=>setOpen(true),
+        onBlur:()=>setTimeout(()=>setOpen(false),160),
+        onKeyDown:ev=>{
+          if((ev.key==="Enter"||ev.key===",")&&val.trim()){ev.preventDefault();add(val);}
+          if(ev.key==="Backspace"&&!val&&participants.length>0)remove(participants[participants.length-1]);
+        },
+        placeholder:participants.length===0?"Name eingeben + Enter…":"",
+        style:{border:"none",outline:"none",fontSize:12,flex:1,minWidth:140,fontFamily:"inherit",padding:"2px 0"}
+      })
+    ),
+    e("div", {style:{fontSize:10,color:C.muted,marginBottom:4}}, "Enter oder Komma bestätigt · Backspace entfernt letzten"),
+    open&&(val||sugg.length>0) && e("div", {style:{position:"absolute",top:"100%",left:0,right:0,zIndex:300,
+      background:"#fff",border:`1px solid ${C.border}`,borderRadius:9,
+      boxShadow:"0 10px 28px rgba(0,0,0,.13)",maxHeight:180,overflowY:"auto"}},
+      val.trim()&&!participants.includes(val.trim()) && e("div", {
+        onMouseDown:()=>add(val),
+        style:{padding:"9px 13px",cursor:"pointer",fontSize:12,fontWeight:700,color:C.navy,
+          borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",gap:8},
+        onMouseEnter:ev=>ev.currentTarget.style.background=C.offWhite,
+        onMouseLeave:ev=>ev.currentTarget.style.background="#fff"
+      }, e("span",{style:{fontSize:16}},"＋"), ` "${val.trim()}" hinzufügen`),
+      ...sugg.map(s => e("div", {key:s, onMouseDown:()=>add(s),
+        style:{padding:"9px 13px",cursor:"pointer",fontSize:12,borderBottom:`1px solid ${C.border}`,
+          display:"flex",alignItems:"center",gap:8},
+        onMouseEnter:ev=>ev.currentTarget.style.background=C.offWhite,
+        onMouseLeave:ev=>ev.currentTarget.style.background="#fff"
+      }, `👤 ${s}`))
+    )
+  );
+}
+
+const inpSt = {width:"100%",padding:"9px 11px",borderRadius:8,border:`1px solid ${C.border}`,
+  fontSize:13,color:C.text,marginBottom:12,fontFamily:"inherit",boxSizing:"border-box",outline:"none"};
+const selSt = {...inpSt,marginBottom:0,background:"#fff",cursor:"pointer"};
+const FL = ({children}) => e("div",{style:{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase",marginBottom:5}},children);
+
+// ─── SlotModal ───────────────────────────────────────────────────────
+function SlotModal({ slot, onSave, onClose, allSlots, knownNames=[] }) {
+  const [form, setForm] = useState({...slot, participants:Array.isArray(slot.participants)?slot.participants:[]});
+  const set = (k,v) => setForm(f=>({...f,[k]:v}));
+  const ti = tinfo(form.type);
+  const timeOptions = [];
+  for (let m=DAY_START; m<DAY_END; m+=15) timeOptions.push(fromMins(m));
+  const previewSlots = (() => {
+    const isNew = !allSlots.find(s=>s.id===form.id);
+    const base = allSlots.map(s=>s.id===form.id?form:s);
+    return isNew ? [...base,form] : base;
+  })();
+  const hasConflict = getConflicts(previewSlots).has(form.id);
+
+  return e("div", {style:{position:"fixed",inset:0,background:"rgba(0,0,0,.48)",display:"flex",
+    alignItems:"center",justifyContent:"center",zIndex:1000}, onClick:onClose},
+    e("div", {style:{background:"#fff",borderRadius:14,padding:28,width:500,maxWidth:"96vw",
+      maxHeight:"92vh",overflowY:"auto",boxShadow:"0 24px 70px rgba(0,0,0,.28)"}, onClick:ev=>ev.stopPropagation()},
+      e("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}},
+        e("div",{style:{display:"flex",alignItems:"center",gap:10}},
+          e("div",{style:{width:4,height:28,background:ti.color,borderRadius:2}}),
+          e("h3",{style:{margin:0,fontSize:17,color:C.navy,fontFamily:"Georgia,serif"}},"Slot bearbeiten")
+        ),
+        e("button",{onClick:onClose,style:{background:"none",border:"none",fontSize:22,cursor:"pointer",color:C.muted}},"×")
+      ),
+      e(FL,{},"Typ"),
+      e("div",{style:{display:"flex",gap:6,flexWrap:"wrap",marginBottom:16}},
+        ...TYPES.map(t => e("button",{key:t.v, onClick:()=>set("type",t.v),
+          style:{padding:"5px 12px",borderRadius:20,fontSize:11,fontWeight:600,cursor:"pointer",
+            border:`2px solid ${form.type===t.v?t.color:C.border}`,
+            background:form.type===t.v?t.bg:"#fff",
+            color:form.type===t.v?t.color:C.muted}}, t.label))
+      ),
+      e("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}},
+        e("div",{},e(FL,{},"Startzeit"),
+          e("select",{value:form.time,onChange:ev=>set("time",ev.target.value),style:selSt},
+            ...timeOptions.map(t=>e("option",{key:t,value:t},t)))),
+        e("div",{},e(FL,{},"Dauer"),
+          e("select",{value:form.duration,onChange:ev=>set("duration",Number(ev.target.value)),style:selSt},
+            ...[15,30,45,60,75,90,105,120,150,180].map(d=>e("option",{key:d,value:d},`${d} Minuten`))))
+      ),
+      e(FL,{},"Thema / Titel"),
+      e("input",{value:form.topic,onChange:ev=>set("topic",ev.target.value),
+        placeholder:"z.B. Anforderungen Auditereignis",style:inpSt}),
+      e(FL,{},"Ziel des Slots"),
+      e("textarea",{value:form.goal,onChange:ev=>set("goal",ev.target.value),
+        placeholder:"Was soll am Ende dieses Slots erreicht sein?",
+        style:{...inpSt,height:64,resize:"vertical"}}),
+      e(FL,{},"Teilnehmer"),
+      e(ParticipantInput,{participants:form.participants,onChange:v=>set("participants",v),knownNames}),
+      e("div",{style:{marginTop:10}},
+        e(FL,{},"Raum"),
+        e("input",{value:form.room,onChange:ev=>set("room",ev.target.value),
+          placeholder:"z.B. Konferenzraum A",style:inpSt})
+      ),
+      e(FL,{},"Notizen"),
+      e("textarea",{value:form.notes,onChange:ev=>set("notes",ev.target.value),
+        placeholder:"Weitere Hinweise…",style:{...inpSt,height:60,resize:"vertical"}}),
+      hasConflict && e("div",{style:{background:C.redBg,border:"1.5px solid #FCA5A5",borderRadius:8,
+        padding:"10px 14px",marginTop:6,display:"flex",gap:10,alignItems:"flex-start"}},
+        e("span",{style:{fontSize:18,lineHeight:1}},"⚠️"),
+        e("div",{},
+          e("div",{style:{fontSize:12,fontWeight:700,color:C.red,marginBottom:2}},"Zeitkonflikt erkannt"),
+          e("div",{style:{fontSize:11,color:"#7F1D1D",lineHeight:1.4}},
+            "Dieser Slot überschneidet sich mit einem anderen Termin im selben Stream.")
+        )
+      ),
+      e("div",{style:{display:"flex",gap:10,marginTop:20}},
+        e("button",{onClick:()=>onSave(form),style:{flex:1,padding:"11px 0",borderRadius:8,border:"none",
+          background:C.navy,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}},"Speichern"),
+        e("button",{onClick:onClose,style:{flex:1,padding:"11px 0",borderRadius:8,
+          border:`1px solid ${C.border}`,background:"#fff",color:C.muted,fontSize:13,cursor:"pointer"}},"Abbrechen")
+      )
+    )
+  );
+}
+
+// ─── DraggableSlot ────────────────────────────────────────────────────
+function DraggableSlot({ slot, onEdit, onDelete, hasConflict, onDragEnd, topPx, heightPx }) {
+  const ti = tinfo(slot.type);
+  const dragRef = useRef(null);
+  const handleMouseDown = useCallback(ev => {
+    if (ev.target.closest("button")) return;
+    ev.preventDefault();
+    const startY = ev.clientY, origMin = toMins(slot.time);
+    const onMove = e2 => {
+      const newMin = clamp(origMin+snapTo((e2.clientY-startY)/PX_PER_MIN), DAY_START, DAY_END-slot.duration);
+      if (dragRef.current) { dragRef.current.style.top=((newMin-DAY_START)*PX_PER_MIN)+"px"; dragRef.current.style.opacity="0.75"; }
+    };
+    const onUp = e2 => {
+      document.removeEventListener("mousemove",onMove); document.removeEventListener("mouseup",onUp);
+      if (dragRef.current) { dragRef.current.style.opacity="1"; }
+      const newMin = clamp(origMin+snapTo((e2.clientY-startY)/PX_PER_MIN), DAY_START, DAY_END-slot.duration);
+      onDragEnd(slot.id, fromMins(newMin));
+    };
+    document.addEventListener("mousemove",onMove); document.addEventListener("mouseup",onUp);
+  }, [slot,onDragEnd]);
+
+  const short=slot.duration<=30, veryShort=slot.duration<=15;
+  return e("div", {ref:dragRef, onMouseDown:handleMouseDown,
+    onClick:ev=>{if(!ev.defaultPrevented)onEdit(slot);},
+    style:{position:"absolute",top:topPx+"px",height:Math.max(heightPx,20)+"px",left:2,right:2,
+      background:hasConflict?"#FFF5F5":ti.bg,
+      borderLeft:`3px solid ${hasConflict?C.red:ti.color}`,
+      borderRadius:5,padding:veryShort?"1px 5px":"4px 6px",cursor:"grab",
+      boxShadow:hasConflict?"0 0 0 1.5px #FCA5A5":"0 1px 4px rgba(0,0,0,.1)",
+      overflow:"hidden",userSelect:"none",boxSizing:"border-box",zIndex:2}},
+    e("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",height:"100%"}},
+      e("div",{style:{flex:1,minWidth:0,overflow:"hidden"}},
+        hasConflict&&!veryShort&&e("span",{style:{fontSize:8,fontWeight:800,color:C.red,marginRight:3}},"⚠"),
+        e("span",{style:{fontSize:9,fontWeight:800,color:ti.color,fontFamily:"monospace"}},slot.time),
+        e("span",{style:{fontSize:8,color:C.muted,fontFamily:"monospace",marginLeft:3}},`${slot.duration} min`),
+        !short&&e("span",{style:{fontSize:8,background:ti.color,color:"#fff",borderRadius:2,padding:"0 3px",fontWeight:700,marginLeft:3}},ti.label),
+        !veryShort&&e("div",{style:{fontSize:short?9:10,fontWeight:700,color:C.text,lineHeight:1.2,marginTop:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}},slot.topic||e("em",{style:{color:C.muted,fontWeight:400}},"…")),
+        !short&&slot.participants?.length>0&&e("div",{style:{display:"flex",gap:2,marginTop:2,flexWrap:"wrap"}},
+          ...slot.participants.slice(0,3).map(p=>e("span",{key:p,style:{fontSize:8,background:ti.color,color:"#fff",borderRadius:8,padding:"0 4px",opacity:.8}},`👤${p}`)),
+          slot.participants.length>3&&e("span",{style:{fontSize:8,color:C.muted}},`+${slot.participants.length-3}`)
+        )
+      ),
+      e("button",{onClick:ev=>{ev.stopPropagation();ev.preventDefault();onDelete(slot.id);},
+        style:{background:"none",border:"none",cursor:"pointer",color:C.muted,fontSize:12,padding:"0 0 0 3px",lineHeight:1,flexShrink:0}},"×")
+    )
+  );
+}
+
+function TimeRuler() {
+  const firstHour=Math.ceil(DAY_START/60), lastHour=Math.floor(DAY_END/60);
+  const hours=[]; for(let h=firstHour;h<=lastHour;h++) hours.push(h);
+  return e(React.Fragment,{},
+    DAY_START%60!==0&&e("div",{style:{position:"absolute",top:0,left:0,right:4,display:"flex",alignItems:"center",justifyContent:"flex-end"}},
+      e("span",{style:{fontSize:9,color:C.muted,fontFamily:"monospace",fontWeight:600}},fromMins(DAY_START))),
+    ...hours.map(h=>e("div",{key:h,style:{position:"absolute",top:(h*60-DAY_START)*PX_PER_MIN-7,left:0,right:4,display:"flex",alignItems:"center",justifyContent:"flex-end"}},
+      e("span",{style:{fontSize:9,color:C.muted,fontFamily:"monospace",fontWeight:600}},`${String(h).padStart(2,"0")}:00`)))
+  );
+}
+
+function GridLines() {
+  const lines=[];
+  for(let m=DAY_START;m<=DAY_END;m+=15) {
+    const top=(m-DAY_START)*PX_PER_MIN,isHour=m%60===0,isHalf=m%60===30;
+    lines.push(e("div",{key:m,style:{position:"absolute",top,left:0,right:0,height:isHour?1:.5,
+      background:isHour?"rgba(26,43,95,.12)":isHalf?"rgba(26,43,95,.06)":"rgba(26,43,95,.03)",pointerEvents:"none"}}));
+  }
+  return e(React.Fragment,{},...lines);
+}
+
+const AddBtn = ({children,onClick,color,bg="transparent"}) =>
+  e("button",{onClick,style:{padding:"5px 4px",borderRadius:6,border:`1.5px dashed ${color}`,
+    background:bg,color,fontSize:9,fontWeight:700,cursor:"pointer",letterSpacing:.3}},children);
+
+function DayTimeline({ day, onUpdateDay, onAddSlot, onEditSlot, onDeleteSlot, onDeleteDay, onDragEnd }) {
+  const conflicts=getConflicts(day.slots);
+  const tech=day.slots.filter(s=>s.type==="tech");
+  const org=day.slots.filter(s=>s.type==="org");
+  const wide=day.slots.filter(s=>isWide(s));
+  return e("div",{style:{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 16px rgba(26,43,95,.1)",flexShrink:0,width:340}},
+    e("div",{style:{background:C.navy,padding:"10px 14px",display:"flex",alignItems:"center",justifyContent:"space-between"}},
+      e("div",{style:{display:"flex",alignItems:"center",gap:8,flex:1}},
+        e("input",{value:day.label,onChange:ev=>onUpdateDay({...day,label:ev.target.value}),
+          style:{background:"none",border:"none",color:"#fff",fontSize:14,fontWeight:700,fontFamily:"Georgia,serif",outline:"none",cursor:"text",flex:1}}),
+        conflicts.size>0&&e("span",{style:{background:C.red,color:"#fff",borderRadius:10,padding:"2px 8px",fontSize:9,fontWeight:700}},`⚠ ${conflicts.size} Konflikt${conflicts.size>1?"e":""}`)
+      ),
+      e("button",{onClick:()=>onDeleteDay(day.id),style:{background:"rgba(255,255,255,.15)",border:"none",borderRadius:5,color:"#fff",fontSize:10,padding:"3px 7px",cursor:"pointer",marginLeft:8}},"✕")
+    ),
+    e("div",{style:{display:"grid",gridTemplateColumns:`${RULER_W}px 1fr 1fr`,borderBottom:`1px solid ${C.border}`}},
+      e("div",{style:{background:C.offWhite}}),
+      e("div",{style:{background:C.navy,color:"#fff",fontSize:8,fontWeight:700,textAlign:"center",padding:"4px 0",letterSpacing:.7}},"TECHNISCH"),
+      e("div",{style:{background:C.gold,color:"#fff",fontSize:8,fontWeight:700,textAlign:"center",padding:"4px 0",letterSpacing:.7}},"ORGANISATORISCH")
+    ),
+    e("div",{style:{display:"flex",overflowY:"auto",maxHeight:500}},
+      e("div",{style:{width:RULER_W,flexShrink:0,background:C.offWhite,borderRight:`1px solid ${C.border}`,position:"relative",height:TIMELINE_H}},
+        e(TimeRuler,{})),
+      e("div",{style:{flex:1,position:"relative",height:TIMELINE_H}},
+        e(GridLines,{}),
+        ...wide.map(s=>e(DraggableSlot,{key:s.id,slot:s,topPx:(toMins(s.time)-DAY_START)*PX_PER_MIN,heightPx:s.duration*PX_PER_MIN,onEdit:onEditSlot,onDelete:onDeleteSlot,hasConflict:conflicts.has(s.id),onDragEnd})),
+        e("div",{style:{position:"absolute",top:0,bottom:0,left:0,width:"50%",borderRight:`1px dashed ${C.border}`}},
+          ...tech.map(s=>e(DraggableSlot,{key:s.id,slot:s,topPx:(toMins(s.time)-DAY_START)*PX_PER_MIN,heightPx:s.duration*PX_PER_MIN,onEdit:onEditSlot,onDelete:onDeleteSlot,hasConflict:conflicts.has(s.id),onDragEnd}))),
+        e("div",{style:{position:"absolute",top:0,bottom:0,right:0,width:"50%"}},
+          ...org.map(s=>e(DraggableSlot,{key:s.id,slot:s,topPx:(toMins(s.time)-DAY_START)*PX_PER_MIN,heightPx:s.duration*PX_PER_MIN,onEdit:onEditSlot,onDelete:onDeleteSlot,hasConflict:conflicts.has(s.id),onDragEnd})))
+      )
+    ),
+    e("div",{style:{padding:"8px 10px",borderTop:`1px solid ${C.border}`,display:"flex",flexDirection:"column",gap:4}},
+      e("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4}},
+        e(AddBtn,{color:C.navy,onClick:()=>onAddSlot(day.id,"tech")},"+ Technisch"),
+        e(AddBtn,{color:C.gold,onClick:()=>onAddSlot(day.id,"org")},"+ Organisatorisch")
+      ),
+      e("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4}},
+        ...["shared","mgmt","break"].map(t=>{const ti=tinfo(t);return e(AddBtn,{key:t,color:ti.color,bg:ti.bg,onClick:()=>onAddSlot(day.id,t)},`+ ${ti.label}`);})
+      )
+    )
+  );
+}
+
+function OverviewPanel({ days }) {
+  const all=days.flatMap(d=>d.slots);
+  const byType={};TYPES.forEach(t=>{byType[t.v]=0;});all.forEach(s=>{byType[s.type]=(byType[s.type]||0)+1;});
+  const allPeople=[...new Set(all.flatMap(s=>s.participants||[]))];
+  const totalConflicts=days.reduce((sum,d)=>sum+getConflicts(d.slots).size,0);
+  return e("div",{style:{background:C.navy,borderRadius:12,padding:"13px 18px",display:"flex",gap:18,alignItems:"center",flexWrap:"wrap",marginBottom:16}},
+    e("div",{style:{color:"#fff"}},
+      e("div",{style:{fontSize:9,color:C.goldLight,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}},"Workshop"),
+      e("div",{style:{fontSize:13,fontWeight:700,fontFamily:"Georgia,serif"}},`${days.length} Tage · ${all.length} Slots`)
+    ),
+    ...TYPES.map(t=>e("div",{key:t.v,style:{display:"flex",alignItems:"center",gap:5}},
+      e("div",{style:{width:8,height:8,borderRadius:2,background:t.color}}),
+      e("span",{style:{fontSize:10,color:"rgba(255,255,255,.7)"}},`${t.label}: `,e("strong",{style:{color:"#fff"}},byType[t.v]||0))
+    )),
+    totalConflicts>0&&e("div",{style:{display:"flex",alignItems:"center",gap:6,background:C.red,borderRadius:8,padding:"4px 10px"}},
+      e("span",{},"⚠️"),e("span",{style:{fontSize:10,color:"#fff",fontWeight:700}},`${totalConflicts} Zeitkonflikt${totalConflicts>1?"e":""}`)
+    ),
+    allPeople.length>0&&e("div",{style:{display:"flex",alignItems:"center",gap:6,marginLeft:"auto",flexWrap:"wrap"}},
+      e("span",{style:{fontSize:9,color:"rgba(255,255,255,.5)"}},"👥"),
+      ...allPeople.map(p=>e("span",{key:p,style:{fontSize:9,background:"rgba(255,255,255,.14)",color:"#fff",borderRadius:10,padding:"2px 8px"}},p))
+    )
+  );
+}
+
+function exportToExcel(days) {
+  const XLSX=window.XLSX;
+  if(!XLSX){alert("Excel-Export nicht verfügbar.");return;}
+  const wb=XLSX.utils.book_new();
+  const allRows=[];
+  days.forEach(day=>{day.slots.forEach(s=>{allRows.push({tag:day.label,time:s.time,endTime:fromMins(toMins(s.time)+Number(s.duration)),duration:s.duration,type:TYPES.find(t=>t.v===s.type)?.label||s.type,topic:s.topic||"",goal:s.goal||"",participants:(s.participants||[]).join(", "),room:s.room||"",notes:s.notes||""});});});
+  allRows.sort((a,b)=>a.tag.localeCompare(b.tag)||a.time.localeCompare(b.time));
+  const headers=["Tag","Startzeit","Endzeit","Dauer (Min)","Typ","Thema","Ziel","Teilnehmer","Raum","Notizen"];
+  const ws1=XLSX.utils.aoa_to_sheet([headers,...allRows.map(r=>[r.tag,r.time,r.endTime,r.duration,r.type,r.topic,r.goal,r.participants,r.room,r.notes])]);
+  ws1["!cols"]=[{wch:10},{wch:10},{wch:10},{wch:12},{wch:16},{wch:35},{wch:35},{wch:30},{wch:18},{wch:35}];
+  XLSX.utils.book_append_sheet(wb,ws1,"Alle Termine");
+  days.forEach(day=>{const rows=allRows.filter(r=>r.tag===day.label);const ws=XLSX.utils.aoa_to_sheet([headers,...rows.map(r=>[r.tag,r.time,r.endTime,r.duration,r.type,r.topic,r.goal,r.participants,r.room,r.notes])]);ws["!cols"]=ws1["!cols"];XLSX.utils.book_append_sheet(wb,ws,day.label.substring(0,31));});
+  XLSX.writeFile(wb,"Workshop_Agenda.xlsx");
+}
+
+// ─── Print Preview ────────────────────────────────────────────────────
+function PrintPreview({ days, onClose }) {
+  const allTimes=[...new Set(days.flatMap(d=>d.slots.map(s=>s.time)))].sort();
+  const slotsByTime=day=>{const m={};day.slots.forEach(s=>{if(!m[s.time])m[s.time]=[];m[s.time].push(s);});return m;};
+  const Cell=({slot})=>{
+    if(!slot)return e("td",{style:{background:"#fafbff",borderBottom:`1px solid ${C.border}`,borderRight:`1px solid ${C.border}`}});
+    const ti=tinfo(slot.type);
+    return e("td",{style:{background:ti.bg,borderLeft:`3px solid ${ti.color}`,borderBottom:`1px solid ${C.border}`,borderRight:`1px solid ${C.border}`,padding:"5px 8px",verticalAlign:"top"}},
+      e("div",{style:{fontSize:10,fontWeight:800,color:ti.color,fontFamily:"monospace"}},slot.time," ",e("span",{style:{fontWeight:400,color:C.muted}},`(${Number(slot.duration)} min)`)),
+      e("div",{style:{fontSize:11,fontWeight:700,color:C.text,marginTop:1}},slot.topic||"–"),
+      slot.participants?.length>0&&e("div",{style:{fontSize:9,color:C.muted,marginTop:2}},`👤 ${slot.participants.join(", ")}`),
+      slot.room&&e("div",{style:{fontSize:9,color:C.muted}},`📍 ${slot.room}`)
+    );
+  };
+  return e("div",{style:{position:"fixed",inset:0,zIndex:2000,background:"#fff",display:"flex",flexDirection:"column",overflow:"auto"}},
+    e("div",{style:{background:C.navy,padding:"0 18px",height:46,display:"flex",alignItems:"center",gap:12,flexShrink:0,position:"sticky",top:0,zIndex:10,boxShadow:"0 2px 8px rgba(0,0,0,.2)"}},
+      e("div",{style:{color:"#fff",fontSize:13,fontWeight:700,fontFamily:"Georgia,serif"}},"Workshop Vorschau"),
+      e("div",{style:{background:"rgba(200,149,42,.2)",border:`1px solid ${C.gold}`,borderRadius:6,padding:"3px 10px",color:C.goldLight,fontSize:10}},"📸 Screenshot: Snipping Tool (Win+Shift+S) · Mac: Cmd+Shift+4"),
+      e("button",{onClick:onClose,style:{marginLeft:"auto",background:"rgba(255,255,255,.12)",border:"1px solid rgba(255,255,255,.25)",borderRadius:7,color:"#fff",fontSize:11,padding:"6px 14px",cursor:"pointer"}},"✕ Schliessen")
+    ),
+    e("div",{style:{padding:"20px 24px 40px"}},
+      e("div",{style:{display:"flex",alignItems:"center",gap:10,marginBottom:16,paddingBottom:10,borderBottom:`2.5px solid ${C.navy}`}},
+        e("div",{style:{width:5,height:26,background:C.gold,borderRadius:2,flexShrink:0}}),
+        e("div",{},
+          e("div",{style:{fontSize:16,fontWeight:700,color:C.navy,fontFamily:"Georgia,serif"}},"Workshop Agenda – Ambit Group × SQS"),
+          e("div",{style:{fontSize:10,color:C.muted,marginTop:2}},`${days.length} Tage · ${days.flatMap(d=>d.slots).length} Termine · ${new Date().toLocaleDateString("de-CH",{day:"2-digit",month:"long",year:"numeric"})}`)
+        ),
+        e("div",{style:{marginLeft:"auto",display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}},
+          ...TYPES.map(t=>e("div",{key:t.v,style:{display:"flex",alignItems:"center",gap:4}},e("div",{style:{width:10,height:10,background:t.color,borderRadius:2}}),e("span",{style:{fontSize:9,color:C.muted,fontWeight:600}},t.label)))
+        )
+      ),
+      e("table",{style:{borderCollapse:"collapse",width:"100%",fontSize:11}},
+        e("thead",{},
+          e("tr",{},
+            e("th",{style:{background:C.offWhite,width:64,padding:"6px 8px",border:`1px solid ${C.border}`,fontSize:10,color:C.muted,fontWeight:700,textAlign:"center"}},"Zeit"),
+            ...days.map(day=>e("th",{key:day.id,colSpan:2,style:{background:C.navy,color:"#fff",padding:"7px 10px",fontSize:12,fontWeight:700,fontFamily:"Georgia,serif",border:`1px solid ${C.border}`,textAlign:"center"}},day.label))
+          ),
+          e("tr",{},
+            e("th",{style:{background:C.offWhite,border:`1px solid ${C.border}`}}),
+            ...days.flatMap(day=>[
+              e("th",{key:day.id+"-t",style:{background:"#EEF2FF",color:C.navy,padding:"4px 8px",fontSize:9,fontWeight:700,border:`1px solid ${C.border}`,textAlign:"center"}},"TECHNISCH"),
+              e("th",{key:day.id+"-o",style:{background:"#FFF7ED",color:C.gold,padding:"4px 8px",fontSize:9,fontWeight:700,border:`1px solid ${C.border}`,textAlign:"center"}},"ORGANISATORISCH")
+            ])
+          )
+        ),
+        e("tbody",{},
+          ...allTimes.map(time=>e("tr",{key:time},
+            e("td",{style:{background:C.offWhite,textAlign:"right",padding:"6px 8px",fontSize:10,fontFamily:"monospace",fontWeight:700,color:C.navy,border:`1px solid ${C.border}`,whiteSpace:"nowrap",verticalAlign:"top"}},time),
+            ...days.flatMap(day=>{
+              const m=slotsByTime(day), slots=m[time]||[];
+              const wide=slots.find(s=>isWide(s)), tech=slots.find(s=>s.type==="tech"), org=slots.find(s=>s.type==="org");
+              if(wide){const ti=tinfo(wide.type);return[e("td",{key:day.id,colSpan:2,style:{background:ti.bg,borderLeft:`3px solid ${ti.color}`,border:`1px solid ${C.border}`,padding:"5px 8px",verticalAlign:"top"}},
+                e("div",{style:{fontSize:10,fontWeight:800,color:ti.color,fontFamily:"monospace"}},wide.time," ",e("span",{style:{fontWeight:400,color:C.muted}},`(${Number(wide.duration)} min)`),
+                  e("span",{style:{fontSize:9,background:ti.color,color:"#fff",borderRadius:3,padding:"0 4px",marginLeft:5}},ti.label)),
+                e("div",{style:{fontSize:11,fontWeight:700,color:C.text,marginTop:1}},wide.topic||""),
+                wide.participants?.length>0&&e("div",{style:{fontSize:9,color:C.muted}},`👤 ${wide.participants.join(", ")}`)
+              )];}
+              return[e(Cell,{key:day.id+"-t",slot:tech}),e(Cell,{key:day.id+"-o",slot:org})];
+            })
+          ))
+        )
+      )
+    )
+  );
+}
+
+// ─── App ──────────────────────────────────────────────────────────────
+function App() {
+  const [days, setDaysState] = useState(null);
+  const [editingSlot, setEditingSlot] = useState(null);
+  const [showPreview, setShowPreview] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("");
+
+  useEffect(() => {
+    const ref = doc(db, "workshop", "planner");
+    const unsub = onSnapshot(ref, snap => {
+      if (snap.exists()) {
+        setDaysState(snap.data().days);
+      } else {
+        const initial = [mkDay(1), mkDay(2), mkDay(3)];
+        setDoc(ref, { days: initial });
+        setDaysState(initial);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  const saveDays = newDays => {
+    setDaysState(newDays);
+    setSaveStatus("saving");
+    setDoc(doc(db,"workshop","planner"), {days:newDays})
+      .then(()=>{setSaveStatus("saved");setTimeout(()=>setSaveStatus(""),2000);})
+      .catch(()=>setSaveStatus(""));
+  };
+
+  const addDay    = () => saveDays([...days, mkDay(days.length+1)]);
+  const deleteDay = id => saveDays(days.filter(x=>x.id!==id));
+  const updateDay = upd => saveDays(days.map(x=>x.id===upd.id?upd:x));
+  const addSlot   = (dayId, type) => setEditingSlot({...mkSlot(type), _newForDayId:dayId});
+  const saveSlot  = upd => {
+    const {_newForDayId,...slot} = upd;
+    if (_newForDayId) saveDays(days.map(day=>day.id===_newForDayId?{...day,slots:[...day.slots,slot]}:day));
+    else saveDays(days.map(day=>({...day,slots:day.slots.map(s=>s.id===slot.id?slot:s)})));
+    setEditingSlot(null);
+  };
+  const deleteSlot = slotId => saveDays(days.map(day=>({...day,slots:day.slots.filter(s=>s.id!==slotId)})));
+  const dragEnd    = (slotId,newTime) => saveDays(days.map(day=>({...day,slots:day.slots.map(s=>s.id===slotId?{...s,time:newTime}:s)})));
+
+  if (!days) return e("div",{style:{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",flexDirection:"column",gap:16}},
+    e("div",{style:{width:40,height:40,border:`4px solid ${C.border}`,borderTop:`4px solid ${C.navy}`,borderRadius:"50%",animation:"spin 1s linear infinite"}}),
+    e("div",{style:{fontSize:14,color:C.muted}},"Verbinde mit Datenbank…")
+  );
+
+  const knownNames = [...new Set(days.flatMap(d=>d.slots.flatMap(s=>s.participants||[])))].sort();
+
+  return e("div",{style:{minHeight:"100vh",background:`linear-gradient(135deg,${C.offWhite} 0%,#E8EDF5 100%)`}},
+    e("div",{style:{background:C.navy,height:54,padding:"0 22px",display:"flex",alignItems:"center",justifyContent:"space-between",boxShadow:"0 2px 12px rgba(0,0,0,.18)",position:"sticky",top:0,zIndex:100}},
+      e("div",{style:{display:"flex",alignItems:"center",gap:12}},
+        e("div",{style:{width:5,height:30,background:C.gold,borderRadius:2}}),
+        e("div",{},
+          e("div",{style:{color:"#fff",fontSize:14,fontWeight:700,fontFamily:"Georgia,serif",lineHeight:1.1}},"Workshop Planner"),
+          e("div",{style:{color:C.goldLight,fontSize:9,letterSpacing:.6}},"AMBIT GROUP × SQS")
+        )
+      ),
+      e("div",{style:{display:"flex",gap:10,alignItems:"center"}},
+        saveStatus==="saving"&&e("span",{style:{fontSize:10,color:"rgba(255,255,255,.5)"}},"💾 Speichert…"),
+        saveStatus==="saved"&&e("span",{style:{fontSize:10,color:C.goldLight}},"✓ Gespeichert"),
+        e("span",{style:{fontSize:9,color:"rgba(255,255,255,.4)"}},"Drag & Drop · Klick zum Bearbeiten · 15-Min-Raster"),
+        e("button",{onClick:()=>setShowPreview(true),style:{background:"rgba(255,255,255,.12)",border:"1px solid rgba(255,255,255,.25)",borderRadius:8,color:"#fff",fontSize:11,fontWeight:700,padding:"7px 14px",cursor:"pointer"}},"👁 Vorschau"),
+        e("button",{onClick:()=>exportToExcel(days),style:{background:"rgba(255,255,255,.12)",border:"1px solid rgba(255,255,255,.25)",borderRadius:8,color:"#fff",fontSize:11,fontWeight:700,padding:"7px 14px",cursor:"pointer"}},"⬇ Excel"),
+        e("button",{onClick:addDay,style:{background:C.gold,border:"none",borderRadius:8,color:C.navy,fontSize:11,fontWeight:700,padding:"7px 14px",cursor:"pointer"}},"+ Tag")
+      )
+    ),
+    e("div",{style:{padding:"18px 18px 40px"}},
+      e(OverviewPanel,{days}),
+      e("div",{style:{display:"flex",gap:12,marginBottom:14,flexWrap:"wrap",alignItems:"center"}},
+        ...TYPES.map(t=>e("div",{key:t.v,style:{display:"flex",alignItems:"center",gap:4}},e("div",{style:{width:9,height:9,background:t.color,borderRadius:2}}),e("span",{style:{fontSize:10,color:C.muted,fontWeight:600}},t.label))),
+        e("span",{style:{fontSize:10,color:C.muted,marginLeft:4}},"· Gemeinsam/Pause/Mgmt. überspannt beide Streams")
+      ),
+      e("div",{style:{display:"flex",gap:14,alignItems:"flex-start",overflowX:"auto",paddingBottom:24}},
+        ...days.map(day=>e(DayTimeline,{key:day.id,day,onUpdateDay:updateDay,onAddSlot:addSlot,
+          onEditSlot:setEditingSlot,onDeleteSlot:deleteSlot,onDeleteDay:deleteDay,onDragEnd:dragEnd})),
+        e("div",{onClick:addDay,
+          onMouseEnter:ev=>{ev.currentTarget.style.borderColor=C.gold;ev.currentTarget.style.color=C.gold;},
+          onMouseLeave:ev=>{ev.currentTarget.style.borderColor=C.border;ev.currentTarget.style.color=C.muted;},
+          style:{width:80,height:180,borderRadius:12,border:`2px dashed ${C.border}`,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",cursor:"pointer",color:C.muted,flexShrink:0,transition:"all .15s",marginTop:72}},
+          e("div",{style:{fontSize:24}},"+"),
+          e("div",{style:{fontSize:9,fontWeight:600,marginTop:4,textAlign:"center"}},"Tag",e("br",{}),"hinzufügen")
+        )
+      )
+    ),
+    showPreview&&e(PrintPreview,{days,onClose:()=>setShowPreview(false)}),
+    editingSlot&&e(SlotModal,{slot:editingSlot,onSave:saveSlot,onClose:()=>setEditingSlot(null),knownNames,
+      allSlots:(()=>{const dayId=editingSlot._newForDayId||days.find(d=>d.slots.some(s=>s.id===editingSlot.id))?.id;const day=days.find(d=>d.id===dayId);return day?day.slots:[];})()})
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(e(App,{}));
+</script>
+</body>
+</html>
