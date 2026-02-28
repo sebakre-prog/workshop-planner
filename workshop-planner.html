@@ -52,7 +52,7 @@ const { createPortal } = await import("https://esm.sh/react-dom@18");
 const e = React.createElement;
 
 // ── Constants ─────────────────────────────────────────────────────────
-const VERSION    = "v2.5";
+const VERSION    = "v2.6";
 const PX_PER_MIN = 1.2;
 const SNAP       = 15;
 const DAY_START  = 7 * 60 + 30;
@@ -258,25 +258,30 @@ function DraggableSlot({ slot, onEdit, onDelete, onCopy, hasConflict, onDragEnd,
     document.addEventListener("mousemove",onMove);document.addEventListener("mouseup",onUp);
   },[slot,onDragEnd]);
 
-  if(!visible)return e("div",{ref:dragRef,style:{position:"absolute",top:topPx+"px",height:Math.max(heightPx,36)+"px",left:2,right:2,opacity:0.15,background:ti.bg,borderLeft:`3px solid ${ti.color}`,borderRadius:5,boxSizing:"border-box",zIndex:2}});
+  if(!visible)return e("div",{ref:dragRef,style:{position:"absolute",top:topPx+"px",height:heightPx+"px",left:2,right:2,opacity:0.15,background:ti.bg,borderLeft:`3px solid ${ti.color}`,borderRadius:5,boxSizing:"border-box",zIndex:2}});
 
   const short=slot.duration<=30,veryShort=slot.duration<=15;
   return e("div",{ref:dragRef,onMouseDown:handleMouseDown,onClick:ev=>{if(!ev.defaultPrevented)onEdit(slot);},
     onMouseMove:ev=>{ if(!tooltip||Math.abs(ev.clientX-tooltip.x)>2||Math.abs(ev.clientY-tooltip.y)>2) setTooltip({x:ev.clientX,y:ev.clientY}); },
     onMouseLeave:()=>setTooltip(null),
-    style:{position:"absolute",top:topPx+"px",height:Math.max(heightPx,36)+"px",left:2,right:2,
+    style:{position:"absolute",top:topPx+"px",height:heightPx+"px",left:2,right:2,
       background:hasConflict?"#FFF5F5":ti.bg,borderLeft:`3px solid ${hasConflict?C.red:ti.color}`,
       borderRadius:5,padding:veryShort?"1px 5px":"4px 6px",cursor:"grab",
       boxShadow:hasConflict?"0 0 0 1.5px #FCA5A5":"0 1px 4px rgba(0,0,0,.1)",
       overflow:"hidden",userSelect:"none",boxSizing:"border-box",zIndex:2}},
     e("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",height:"100%"}},
       e("div",{style:{flex:1,minWidth:0,overflow:"hidden"}},
-        hasConflict&&!veryShort&&e("span",{style:{fontSize:8,fontWeight:800,color:C.red,marginRight:3}},"⚠"),
-        e("span",{style:{fontSize:11,fontWeight:800,color:ti.color,fontFamily:"monospace"}},slot.time),
-        e("span",{style:{fontSize:10,color:C.muted,fontFamily:"monospace",marginLeft:3}},`${slot.duration}m`),
-        !short&&e("span",{style:{fontSize:8,background:ti.color,color:"#fff",borderRadius:2,padding:"0 3px",fontWeight:700,marginLeft:3}},ti.label),
-        e("div",{style:{fontSize:11,fontWeight:700,color:C.text,lineHeight:1.2,marginTop:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}},slot.topic||e("em",{style:{color:C.muted,fontWeight:400}},"…")),
-        !short&&slot.participants?.length>0&&e("div",{style:{display:"flex",gap:2,marginTop:2,flexWrap:"wrap"}},
+        // Single compact line: time · title (duration)
+        e("div",{style:{display:"flex",alignItems:"baseline",gap:4,overflow:"hidden",whiteSpace:"nowrap"}},
+          hasConflict&&e("span",{style:{fontSize:9,fontWeight:800,color:C.red,marginRight:2}},"⚠"),
+          e("span",{style:{fontSize:10,fontWeight:800,color:ti.color,fontFamily:"monospace",flexShrink:0}},slot.time),
+          e("span",{style:{fontSize:11,fontWeight:700,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+            slot.topic||e("em",{style:{color:C.muted,fontWeight:400}},"…")
+          ),
+          e("span",{style:{fontSize:9,color:C.muted,flexShrink:0}},`(${durLabel(Number(slot.duration))})`),
+        ),
+        // Participants only if enough height (>40px = >30min slot)
+        heightPx>40&&slot.participants?.length>0&&e("div",{style:{display:"flex",gap:2,marginTop:2,flexWrap:"wrap",overflow:"hidden"}},
           ...slot.participants.slice(0,3).map(p=>e("span",{key:p,style:{fontSize:8,background:ti.color,color:"#fff",borderRadius:8,padding:"0 4px",opacity:.8}},`👤${p}`)),
           slot.participants.length>3&&e("span",{style:{fontSize:8,color:C.muted}},`+${slot.participants.length-3}`)
         )
