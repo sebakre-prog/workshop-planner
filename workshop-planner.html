@@ -15,11 +15,14 @@
   .filter-btn.active { color:#fff; border-color:transparent; }
   input[type="date"]::-webkit-calendar-picker-indicator { opacity:0.5; cursor:pointer; }
   @media print {
-    @page { size: A4 landscape; margin: 6mm; }
+    @page { size: A4 landscape; margin: 5mm; }
     .no-print { display: none !important; }
-    body { margin: 0; background: white; }
-    #print-preview { overflow: visible !important; position: static !important; height: auto !important; }
-    #print-content { padding: 4mm !important; }
+    body { margin: 0; background: white; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    #print-preview { overflow: visible !important; position: static !important; height: auto !important; display: block !important; }
+    #print-content { padding: 3mm !important; transform-origin: top left; }
+    #print-content table { font-size: 7px !important; }
+    #print-content table td, #print-content table th { padding: 1px 2px !important; }
+    #print-content .slot-block { padding: 1px 3px !important; }
   }
 </style>
 </head>
@@ -48,7 +51,7 @@ const { useState, useRef, useCallback, useEffect, useReducer } = React;
 const e = React.createElement;
 
 // ── Constants ─────────────────────────────────────────────────────────
-const VERSION    = "v2.1";
+const VERSION    = "v2.2";
 const PX_PER_MIN = 1.5;
 const SNAP       = 15;
 const DAY_START  = 7 * 60 + 30;
@@ -292,7 +295,7 @@ function DayTimeline({ day, onUpdateDay, onAddSlot, onEditSlot, onDeleteSlot, on
     return typeOk&&personOk;
   };
 
-  return e("div",{style:{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 16px rgba(26,43,95,.1)",flex:"1 1 0",minWidth:280,maxWidth:480}},
+  return e("div",{style:{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 16px rgba(26,43,95,.1)",flex:"1 1 0",minWidth:300,maxWidth:600}},
     // Day header
     e("div",{style:{background:C.navy,padding:"10px 14px"}},
       e("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}},
@@ -424,7 +427,25 @@ function PrintPreview({ days, onClose }) {
     );
   };
 
-  const printPDF=()=>window.print();
+  const printPDF=()=>{
+    const content = document.getElementById("print-content");
+    if(content) {
+      const pw = 277; // A4 landscape printable width in mm (297-2*10)
+      const ph = 190; // A4 landscape printable height in mm (210-2*10)
+      const cw = content.scrollWidth;
+      const ch = content.scrollHeight;
+      const scaleX = (pw * 3.7795) / cw;
+      const scaleY = (ph * 3.7795) / ch;
+      const scale = Math.min(scaleX, scaleY, 1);
+      content.style.transform = `scale(${scale})`;
+      content.style.transformOrigin = "top left";
+      content.style.width = (100/scale) + "%";
+    }
+    window.print();
+    setTimeout(()=>{
+      if(content){ content.style.transform=""; content.style.width=""; }
+    }, 1000);
+  };
 
   return e("div",{id:"print-preview",style:{position:"fixed",inset:0,zIndex:2000,background:"#fff",display:"flex",flexDirection:"column",overflow:"auto"}},
     e("style",{},`@media print { .no-print { display:none!important; } body { margin:0; } }`),
@@ -545,6 +566,7 @@ function App() {
   const addSlot   = (dayId,type)=>setEditingSlot({...mkSlot(type),_newForDayId:dayId});
   const saveSlot  = upd=>{
     const{_newForDayId,...slot}=upd;
+    slot.time = fromMins(snapTo(toMins(slot.time)));
     if(_newForDayId)saveDays(days.map(day=>day.id===_newForDayId?{...day,slots:[...day.slots,slot]}:day));
     else saveDays(days.map(day=>({...day,slots:day.slots.map(s=>s.id===slot.id?slot:s)})));
     setEditingSlot(null);
@@ -592,7 +614,7 @@ function App() {
       )
     ),
 
-    e("div",{style:{padding:"18px 18px 40px"}},
+    e("div",{style:{padding:"12px 10px 40px"}},
       e(OverviewPanel,{days}),
 
       // Filter bar
