@@ -219,7 +219,7 @@ function SlotModal({ slot, onSave, onClose, allSlots, knownNames=[] }) {
             ...timeOptions.map(t=>e("option",{key:t,value:t},t)))),
         e("div",{},e(FL,{},"Dauer"),
           e("select",{value:form.duration,onChange:ev=>set("duration",Number(ev.target.value)),style:selSt},
-            ...[15,30,45,60,75,90,105,120,150,180].map(d=>e("option",{key:d,value:d},`${d} Minuten`))))
+            ...[15,30,45,60,75,90,105,120,150,180,210,240,270,300,360,420,480].map(d=>e("option",{key:d,value:d},d < 60 ? `${d} Minuten` : d % 60 === 0 ? `${d/60} Stunden` : `${Math.floor(d/60)}h ${d%60}min`))))
       ),
       e(FL,{},"Thema / Titel"),
       e("input",{value:form.topic,onChange:ev=>set("topic",ev.target.value),
@@ -413,7 +413,7 @@ function exportToExcel(days) {
 }
 
 // ─── Print Preview ────────────────────────────────────────────────────
-const VERSION = "v1.4";
+const VERSION = "v1.5";
 const PX15 = 28; // pixels per 15 minutes
 
 function PrintPreview({ days, onClose }) {
@@ -452,7 +452,7 @@ function PrintPreview({ days, onClose }) {
     const orgSlots  = day.slots.filter(s => s.type === "org");
     const wideSlots = day.slots.filter(s => isWide(s));
     const half = "calc(50% - 1px)";
-    return e("td", { style: { verticalAlign: "top", padding: 0, border: `1px solid ${C.border}`, width: 280 } },
+    return e("td", { style: { verticalAlign: "top", padding: 0, border: `1px solid ${C.border}` } },
       e("div", { style: { position: "relative", height: totalH, width: "100%" } },
         // Hour grid lines
         ...hours.map(m => e("div", { key: m, style: {
@@ -500,12 +500,12 @@ function PrintPreview({ days, onClose }) {
         )
       ),
       // Timeline table
-      e("table", { style: { borderCollapse: "collapse", tableLayout: "fixed" } },
+      e("table", { style: { borderCollapse: "collapse", tableLayout: "fixed", width: "100%" } },
         e("thead", {},
           e("tr", {},
             e("th", { style: { width: 44, background: C.offWhite, border: `1px solid ${C.border}` } }),
             ...days.map(day => e("th", { key: day.id, colSpan: 1, style: {
-              width: 280, background: C.navy, color: "#fff", padding: "7px 10px",
+              background: C.navy, color: "#fff", padding: "7px 10px",
               fontSize: 13, fontWeight: 700, fontFamily: "Georgia,serif",
               border: `1px solid ${C.border}`, textAlign: "center"
             } }, day.label))
