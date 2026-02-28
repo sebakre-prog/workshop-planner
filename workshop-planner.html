@@ -414,64 +414,106 @@ function exportToExcel(days) {
 
 // ─── Print Preview ────────────────────────────────────────────────────
 function PrintPreview({ days, onClose }) {
-  const allTimes=[...new Set(days.flatMap(d=>d.slots.map(s=>s.time)))].sort();
-  const slotsByTime=day=>{const m={};day.slots.forEach(s=>{if(!m[s.time])m[s.time]=[];m[s.time].push(s);});return m;};
-  const Cell=({slot})=>{
-    if(!slot)return e("td",{style:{background:"#fafbff",borderBottom:`1px solid ${C.border}`,borderRight:`1px solid ${C.border}`}});
-    const ti=tinfo(slot.type);
-    return e("td",{style:{background:ti.bg,borderLeft:`3px solid ${ti.color}`,borderBottom:`1px solid ${C.border}`,borderRight:`1px solid ${C.border}`,padding:"5px 8px",verticalAlign:"top"}},
-      e("div",{style:{fontSize:10,fontWeight:800,color:ti.color,fontFamily:"monospace"}},slot.time," ",e("span",{style:{fontWeight:400,color:C.muted}},`(${Number(slot.duration)} min)`)),
-      e("div",{style:{fontSize:11,fontWeight:700,color:C.text,marginTop:1}},slot.topic||"–"),
-      slot.participants?.length>0&&e("div",{style:{fontSize:9,color:C.muted,marginTop:2}},`👤 ${slot.participants.join(", ")}`),
-      slot.room&&e("div",{style:{fontSize:9,color:C.muted}},`📍 ${slot.room}`)
+  // Build all 15-min time slots that are covered by any slot
+  const allTimes = [...new Set(days.flatMap(d => d.slots.flatMap(s => {
+    const times = [];
+    for (let m = toMins(s.time); m < toMins(s.time) + Number(s.duration); m += 15)
+      times.push(fromMins(m));
+    return times;
+  })))].sort();
+
+  // For each day+stream, compute which cells are "occupied" by a rowSpan slot
+  // Returns: { time -> { slot, rowSpan, render } }
+  // render=true means: this is the first cell (show content + rowSpan)
+  // render=false means: skip this cell (already covered by rowSpan above)
+  const buildCellMap = (day) => {
+    const map = {}; // time -> { tech: ..., org: ..., wide: ... }
+    allTimes.forEach(t => { map[t] = { tech: null, org: null, wide: null }; });
+
+    day.slots.forEach(s => {
+      const startMin = toMins(s.time);
+      const slots15 = Math.ceil(Number(s.duration) / 15);
+      const stream = isWide(s) ? "wide" : s.type === "tech" ? "tech" : "org";
+      for (let i = 0; i < slots15; i++) {
+        const t = fromMins(startMin + i * 15);
+        if (!map[t]) map[t] = { tech: null, org: null, wide: null };
+        map[t][stream] = { slot: s, rowSpan: i === 0 ? slots15 : 0 };
+      }
+    });
+    return map;
+  };
+
+  const cellMaps = days.map(buildCellMap);
+
+  const SlotCell = ({ entry, colSpan = 1 }) => {
+    if (!entry) return e("td", { style: { background: "#fafbff", border: `1px solid ${C.border}`, minWidth: 100 } });
+    if (entry.rowSpan === 0) return null; // skip – covered by rowSpan above
+    const s = entry.slot, ti = tinfo(s.type);
+    return e("td", {
+      rowSpan: entry.rowSpan, colSpan,
+      style: { background: ti.bg, borderLeft: `3px solid ${ti.color}`, border: `1px solid ${C.border}`,
+        padding: "5px 8px", verticalAlign: "top", minWidth: 100 }
+    },
+      e("div", { style: { fontSize: 10, fontWeight: 800, color: ti.color, fontFamily: "monospace" } },
+        s.time, " ", e("span", { style: { fontWeight: 400, color: C.muted } }, `(${Number(s.duration)} min)`)),
+      e("div", { style: { fontSize: 11, fontWeight: 700, color: C.text, marginTop: 1 } }, s.topic || "–"),
+      s.participants?.length > 0 && e("div", { style: { fontSize: 9, color: C.muted, marginTop: 2 } }, `👤 ${s.participants.join(", ")}`),
+      s.room && e("div", { style: { fontSize: 9, color: C.muted } }, `📍 ${s.room}`)
     );
   };
-  return e("div",{style:{position:"fixed",inset:0,zIndex:2000,background:"#fff",display:"flex",flexDirection:"column",overflow:"auto"}},
-    e("div",{style:{background:C.navy,padding:"0 18px",height:46,display:"flex",alignItems:"center",gap:12,flexShrink:0,position:"sticky",top:0,zIndex:10,boxShadow:"0 2px 8px rgba(0,0,0,.2)"}},
-      e("div",{style:{color:"#fff",fontSize:13,fontWeight:700,fontFamily:"Georgia,serif"}},"Workshop Vorschau"),
-      e("div",{style:{background:"rgba(200,149,42,.2)",border:`1px solid ${C.gold}`,borderRadius:6,padding:"3px 10px",color:C.goldLight,fontSize:10}},"📸 Screenshot: Snipping Tool (Win+Shift+S) · Mac: Cmd+Shift+4"),
-      e("button",{onClick:onClose,style:{marginLeft:"auto",background:"rgba(255,255,255,.12)",border:"1px solid rgba(255,255,255,.25)",borderRadius:7,color:"#fff",fontSize:11,padding:"6px 14px",cursor:"pointer"}},"✕ Schliessen")
+
+  return e("div", { style: { position: "fixed", inset: 0, zIndex: 2000, background: "#fff", display: "flex", flexDirection: "column", overflow: "auto" } },
+    e("div", { style: { background: C.navy, padding: "0 18px", height: 46, display: "flex", alignItems: "center", gap: 12, flexShrink: 0, position: "sticky", top: 0, zIndex: 10, boxShadow: "0 2px 8px rgba(0,0,0,.2)" } },
+      e("div", { style: { color: "#fff", fontSize: 13, fontWeight: 700, fontFamily: "Georgia,serif" } }, "Workshop Vorschau"),
+      e("div", { style: { background: "rgba(200,149,42,.2)", border: `1px solid ${C.gold}`, borderRadius: 6, padding: "3px 10px", color: C.goldLight, fontSize: 10 } }, "📸 Screenshot: Snipping Tool (Win+Shift+S) · Mac: Cmd+Shift+4"),
+      e("button", { onClick: onClose, style: { marginLeft: "auto", background: "rgba(255,255,255,.12)", border: "1px solid rgba(255,255,255,.25)", borderRadius: 7, color: "#fff", fontSize: 11, padding: "6px 14px", cursor: "pointer" } }, "✕ Schliessen")
     ),
-    e("div",{style:{padding:"20px 24px 40px"}},
-      e("div",{style:{display:"flex",alignItems:"center",gap:10,marginBottom:16,paddingBottom:10,borderBottom:`2.5px solid ${C.navy}`}},
-        e("div",{style:{width:5,height:26,background:C.gold,borderRadius:2,flexShrink:0}}),
-        e("div",{},
-          e("div",{style:{fontSize:16,fontWeight:700,color:C.navy,fontFamily:"Georgia,serif"}},"Workshop Agenda – Ambit Group × SQS"),
-          e("div",{style:{fontSize:10,color:C.muted,marginTop:2}},`${days.length} Tage · ${days.flatMap(d=>d.slots).length} Termine · ${new Date().toLocaleDateString("de-CH",{day:"2-digit",month:"long",year:"numeric"})}`)
+    e("div", { style: { padding: "20px 24px 40px" } },
+      e("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 16, paddingBottom: 10, borderBottom: `2.5px solid ${C.navy}` } },
+        e("div", { style: { width: 5, height: 26, background: C.gold, borderRadius: 2, flexShrink: 0 } }),
+        e("div", {},
+          e("div", { style: { fontSize: 16, fontWeight: 700, color: C.navy, fontFamily: "Georgia,serif" } }, "Workshop Agenda – Ambit Group × SQS"),
+          e("div", { style: { fontSize: 10, color: C.muted, marginTop: 2 } }, `${days.length} Tage · ${days.flatMap(d => d.slots).length} Termine · ${new Date().toLocaleDateString("de-CH", { day: "2-digit", month: "long", year: "numeric" })}`)
         ),
-        e("div",{style:{marginLeft:"auto",display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}},
-          ...TYPES.map(t=>e("div",{key:t.v,style:{display:"flex",alignItems:"center",gap:4}},e("div",{style:{width:10,height:10,background:t.color,borderRadius:2}}),e("span",{style:{fontSize:9,color:C.muted,fontWeight:600}},t.label)))
+        e("div", { style: { marginLeft: "auto", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" } },
+          ...TYPES.map(t => e("div", { key: t.v, style: { display: "flex", alignItems: "center", gap: 4 } },
+            e("div", { style: { width: 10, height: 10, background: t.color, borderRadius: 2 } }),
+            e("span", { style: { fontSize: 9, color: C.muted, fontWeight: 600 } }, t.label)))
         )
       ),
-      e("table",{style:{borderCollapse:"collapse",width:"100%",fontSize:11}},
-        e("thead",{},
-          e("tr",{},
-            e("th",{style:{background:C.offWhite,width:64,padding:"6px 8px",border:`1px solid ${C.border}`,fontSize:10,color:C.muted,fontWeight:700,textAlign:"center"}},"Zeit"),
-            ...days.map(day=>e("th",{key:day.id,colSpan:2,style:{background:C.navy,color:"#fff",padding:"7px 10px",fontSize:12,fontWeight:700,fontFamily:"Georgia,serif",border:`1px solid ${C.border}`,textAlign:"center"}},day.label))
+      e("table", { style: { borderCollapse: "collapse", width: "100%", fontSize: 11 } },
+        e("thead", {},
+          e("tr", {},
+            e("th", { style: { background: C.offWhite, width: 56, padding: "6px 8px", border: `1px solid ${C.border}`, fontSize: 10, color: C.muted, fontWeight: 700, textAlign: "center" } }, "Zeit"),
+            ...days.map(day => e("th", { key: day.id, colSpan: 2, style: { background: C.navy, color: "#fff", padding: "7px 10px", fontSize: 12, fontWeight: 700, fontFamily: "Georgia,serif", border: `1px solid ${C.border}`, textAlign: "center" } }, day.label))
           ),
-          e("tr",{},
-            e("th",{style:{background:C.offWhite,border:`1px solid ${C.border}`}}),
-            ...days.flatMap(day=>[
-              e("th",{key:day.id+"-t",style:{background:"#EEF2FF",color:C.navy,padding:"4px 8px",fontSize:9,fontWeight:700,border:`1px solid ${C.border}`,textAlign:"center"}},"TECHNISCH"),
-              e("th",{key:day.id+"-o",style:{background:"#FFF7ED",color:C.gold,padding:"4px 8px",fontSize:9,fontWeight:700,border:`1px solid ${C.border}`,textAlign:"center"}},"ORGANISATORISCH")
+          e("tr", {},
+            e("th", { style: { background: C.offWhite, border: `1px solid ${C.border}` } }),
+            ...days.flatMap(day => [
+              e("th", { key: day.id + "-t", style: { background: "#EEF2FF", color: C.navy, padding: "4px 8px", fontSize: 9, fontWeight: 700, border: `1px solid ${C.border}`, textAlign: "center" } }, "TECHNISCH"),
+              e("th", { key: day.id + "-o", style: { background: "#FFF7ED", color: C.gold, padding: "4px 8px", fontSize: 9, fontWeight: 700, border: `1px solid ${C.border}`, textAlign: "center" } }, "ORGANISATORISCH")
             ])
           )
         ),
-        e("tbody",{},
-          ...allTimes.map(time=>e("tr",{key:time},
-            e("td",{style:{background:C.offWhite,textAlign:"right",padding:"6px 8px",fontSize:10,fontFamily:"monospace",fontWeight:700,color:C.navy,border:`1px solid ${C.border}`,whiteSpace:"nowrap",verticalAlign:"top"}},time),
-            ...days.flatMap(day=>{
-              const m=slotsByTime(day), slots=m[time]||[];
-              const wide=slots.find(s=>isWide(s)), tech=slots.find(s=>s.type==="tech"), org=slots.find(s=>s.type==="org");
-              if(wide){const ti=tinfo(wide.type);return[e("td",{key:day.id,colSpan:2,style:{background:ti.bg,borderLeft:`3px solid ${ti.color}`,border:`1px solid ${C.border}`,padding:"5px 8px",verticalAlign:"top"}},
-                e("div",{style:{fontSize:10,fontWeight:800,color:ti.color,fontFamily:"monospace"}},wide.time," ",e("span",{style:{fontWeight:400,color:C.muted}},`(${Number(wide.duration)} min)`),
-                  e("span",{style:{fontSize:9,background:ti.color,color:"#fff",borderRadius:3,padding:"0 4px",marginLeft:5}},ti.label)),
-                e("div",{style:{fontSize:11,fontWeight:700,color:C.text,marginTop:1}},wide.topic||""),
-                wide.participants?.length>0&&e("div",{style:{fontSize:9,color:C.muted}},`👤 ${wide.participants.join(", ")}`)
-              )];}
-              return[e(Cell,{key:day.id+"-t",slot:tech}),e(Cell,{key:day.id+"-o",slot:org})];
-            })
-          ))
+        e("tbody", {},
+          ...allTimes.map(time => {
+            const cells = days.flatMap((day, di) => {
+              const cm = cellMaps[di];
+              const row = cm[time] || { tech: null, org: null, wide: null };
+              if (row.wide) {
+                if (row.wide.rowSpan === 0) return []; // skip both cols
+                return [e(SlotCell, { key: day.id + "-w", entry: row.wide, colSpan: 2 })];
+              }
+              const techCell = row.tech?.rowSpan === 0 ? [] : [e(SlotCell, { key: day.id + "-t", entry: row.tech })];
+              const orgCell  = row.org?.rowSpan  === 0 ? [] : [e(SlotCell, { key: day.id + "-o", entry: row.org  })];
+              return [...techCell, ...orgCell];
+            });
+            if (cells.length === 0) return null;
+            return e("tr", { key: time },
+              e("td", { style: { background: C.offWhite, textAlign: "right", padding: "6px 8px", fontSize: 10, fontFamily: "monospace", fontWeight: 700, color: C.navy, border: `1px solid ${C.border}`, whiteSpace: "nowrap", verticalAlign: "top" } }, time),
+              ...cells
+            );
+          }).filter(Boolean)
         )
       )
     )
