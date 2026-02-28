@@ -51,14 +51,14 @@ const { useState, useRef, useCallback, useEffect, useReducer } = React;
 const e = React.createElement;
 
 // ── Constants ─────────────────────────────────────────────────────────
-const VERSION    = "v2.3";
-const PX_PER_MIN = 1.5;
+const VERSION    = "v2.4";
+const PX_PER_MIN = 1.2;
 const SNAP       = 15;
 const DAY_START  = 7 * 60 + 30;
 const DAY_END    = 19 * 60;
 const TIMELINE_H = (DAY_END - DAY_START) * PX_PER_MIN;
 const RULER_W    = 44;
-const PX15       = 28;
+const PX15       = 20;
 
 const C = {
   navy:"#1A2B5F", gold:"#C8952A", goldLight:"#E8B84B",
@@ -213,7 +213,30 @@ function SlotModal({ slot, onSave, onClose, allSlots, knownNames=[] }) {
 }
 
 // ── DraggableSlot ─────────────────────────────────────────────────────
+function Tooltip({ slot }) {
+  const ti = tinfo(slot.type);
+  const endMin = toMins(slot.time) + Number(slot.duration);
+  return e("div", { style: {
+    position:"absolute", bottom:"calc(100% + 6px)", left:"50%", transform:"translateX(-50%)",
+    background:C.navy, color:"#fff", borderRadius:8, padding:"8px 12px", zIndex:500,
+    minWidth:180, maxWidth:260, boxShadow:"0 8px 24px rgba(0,0,0,.25)", pointerEvents:"none",
+    fontSize:11, lineHeight:1.5,
+  }},
+    e("div",{style:{fontWeight:700,fontSize:12,marginBottom:4,color:C.goldLight}}, slot.topic||"(kein Titel)"),
+    e("div",{style:{color:"rgba(255,255,255,.7)",fontSize:10}}, `${slot.time} – ${fromMins(endMin)} (${durLabel(Number(slot.duration))})`),
+    e("div",{style:{display:"inline-block",background:ti.color,borderRadius:3,padding:"1px 6px",fontSize:9,fontWeight:700,marginTop:3}}, ti.label),
+    slot.goal && e("div",{style:{marginTop:5,fontSize:10,color:"rgba(255,255,255,.8)",borderTop:"1px solid rgba(255,255,255,.15)",paddingTop:4}}, slot.goal),
+    slot.participants?.length>0 && e("div",{style:{marginTop:4,fontSize:10,color:"rgba(255,255,255,.7)"}}, `👤 ${slot.participants.join(", ")}`),
+    slot.room && e("div",{style:{marginTop:2,fontSize:10,color:"rgba(255,255,255,.6)"}}, `📍 ${slot.room}`),
+    // Arrow
+    e("div",{style:{position:"absolute",top:"100%",left:"50%",transform:"translateX(-50%)",
+      width:0,height:0,borderLeft:"6px solid transparent",borderRight:"6px solid transparent",
+      borderTop:`6px solid ${C.navy}`}})
+  );
+}
+
 function DraggableSlot({ slot, onEdit, onDelete, onCopy, hasConflict, onDragEnd, topPx, heightPx, visible }) {
+  const [showTooltip, setShowTooltip] = React.useState(false);
   const ti=tinfo(slot.type);
   const dragRef=useRef(null);
   const handleMouseDown=useCallback(ev=>{
@@ -236,6 +259,7 @@ function DraggableSlot({ slot, onEdit, onDelete, onCopy, hasConflict, onDragEnd,
 
   const short=slot.duration<=30,veryShort=slot.duration<=15;
   return e("div",{ref:dragRef,onMouseDown:handleMouseDown,onClick:ev=>{if(!ev.defaultPrevented)onEdit(slot);},
+    onMouseEnter:()=>setShowTooltip(true), onMouseLeave:()=>setShowTooltip(false),
     style:{position:"absolute",top:topPx+"px",height:Math.max(heightPx,20)+"px",left:2,right:2,
       background:hasConflict?"#FFF5F5":ti.bg,borderLeft:`3px solid ${hasConflict?C.red:ti.color}`,
       borderRadius:5,padding:veryShort?"1px 5px":"4px 6px",cursor:"grab",
@@ -244,10 +268,10 @@ function DraggableSlot({ slot, onEdit, onDelete, onCopy, hasConflict, onDragEnd,
     e("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",height:"100%"}},
       e("div",{style:{flex:1,minWidth:0,overflow:"hidden"}},
         hasConflict&&!veryShort&&e("span",{style:{fontSize:8,fontWeight:800,color:C.red,marginRight:3}},"⚠"),
-        e("span",{style:{fontSize:9,fontWeight:800,color:ti.color,fontFamily:"monospace"}},slot.time),
-        e("span",{style:{fontSize:8,color:C.muted,fontFamily:"monospace",marginLeft:3}},`${slot.duration}m`),
+        e("span",{style:{fontSize:11,fontWeight:800,color:ti.color,fontFamily:"monospace"}},slot.time),
+        e("span",{style:{fontSize:10,color:C.muted,fontFamily:"monospace",marginLeft:3}},`${slot.duration}m`),
         !short&&e("span",{style:{fontSize:8,background:ti.color,color:"#fff",borderRadius:2,padding:"0 3px",fontWeight:700,marginLeft:3}},ti.label),
-        !veryShort&&e("div",{style:{fontSize:short?9:10,fontWeight:700,color:C.text,lineHeight:1.2,marginTop:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}},slot.topic||e("em",{style:{color:C.muted,fontWeight:400}},"…")),
+        e("div",{style:{fontSize:11,fontWeight:700,color:C.text,lineHeight:1.2,marginTop:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}},slot.topic||e("em",{style:{color:C.muted,fontWeight:400}},"…")),
         !short&&slot.participants?.length>0&&e("div",{style:{display:"flex",gap:2,marginTop:2,flexWrap:"wrap"}},
           ...slot.participants.slice(0,3).map(p=>e("span",{key:p,style:{fontSize:8,background:ti.color,color:"#fff",borderRadius:8,padding:"0 4px",opacity:.8}},`👤${p}`)),
           slot.participants.length>3&&e("span",{style:{fontSize:8,color:C.muted}},`+${slot.participants.length-3}`)
@@ -259,7 +283,8 @@ function DraggableSlot({ slot, onEdit, onDelete, onCopy, hasConflict, onDragEnd,
         !veryShort&&e("button",{onClick:ev=>{ev.stopPropagation();ev.preventDefault();onCopy(slot);},
           style:{background:"none",border:"none",cursor:"pointer",color:C.muted,fontSize:10,padding:"0 0 0 3px",lineHeight:1},title:"Kopieren"},"⧉")
       )
-    )
+    ),
+    showTooltip && e(Tooltip, {slot})
   );
 }
 
@@ -325,9 +350,13 @@ function DayTimeline({ day, onUpdateDay, onAddSlot, onEditSlot, onDeleteSlot, on
       e("div",{style:{flex:1,position:"relative",height:TIMELINE_H}},
         e(GridLines,{}),
         ...wide.map(s=>e(DraggableSlot,{key:s.id,slot:s,topPx:(toMins(s.time)-DAY_START)*PX_PER_MIN,heightPx:s.duration*PX_PER_MIN,onEdit:onEditSlot,onDelete:onDeleteSlot,onCopy:onCopySlot,hasConflict:conflicts.has(s.id),onDragEnd,visible:isVisible(s)})),
-        e("div",{style:{position:"absolute",top:0,bottom:0,left:0,width:"50%",borderRight:`1px dashed ${C.border}`}},
+        e("div",{
+          onClick:ev=>{if(ev.target===ev.currentTarget){const rect=ev.currentTarget.getBoundingClientRect();const mins=snapTo((ev.clientY-rect.top)/PX_PER_MIN)+DAY_START;onAddSlot(day.id,"tech",fromMins(mins));}},
+          style:{position:"absolute",top:0,bottom:0,left:0,width:"50%",borderRight:`1px dashed ${C.border}`,cursor:"crosshair"}},
           ...tech.map(s=>e(DraggableSlot,{key:s.id,slot:s,topPx:(toMins(s.time)-DAY_START)*PX_PER_MIN,heightPx:s.duration*PX_PER_MIN,onEdit:onEditSlot,onDelete:onDeleteSlot,onCopy:onCopySlot,hasConflict:conflicts.has(s.id),onDragEnd,visible:isVisible(s)}))),
-        e("div",{style:{position:"absolute",top:0,bottom:0,right:0,width:"50%"}},
+        e("div",{
+          onClick:ev=>{if(ev.target===ev.currentTarget){const rect=ev.currentTarget.getBoundingClientRect();const mins=snapTo((ev.clientY-rect.top)/PX_PER_MIN)+DAY_START;onAddSlot(day.id,"org",fromMins(mins));}},
+          style:{position:"absolute",top:0,bottom:0,right:0,width:"50%",cursor:"crosshair"}},
           ...org.map(s=>e(DraggableSlot,{key:s.id,slot:s,topPx:(toMins(s.time)-DAY_START)*PX_PER_MIN,heightPx:s.duration*PX_PER_MIN,onEdit:onEditSlot,onDelete:onDeleteSlot,onCopy:onCopySlot,hasConflict:conflicts.has(s.id),onDragEnd,visible:isVisible(s)})))
       )
     ),
@@ -563,7 +592,7 @@ function App() {
   const addDay    = ()=>saveDays([...days,mkDay(days.length+1)]);
   const deleteDay = id=>saveDays(days.filter(x=>x.id!==id));
   const updateDay = upd=>saveDays(days.map(x=>x.id===upd.id?upd:x));
-  const addSlot   = (dayId,type)=>setEditingSlot({...mkSlot(type),_newForDayId:dayId});
+  const addSlot   = (dayId,type,time)=>setEditingSlot({...mkSlot(type),time:time||"09:00",_newForDayId:dayId});
   const saveSlot  = upd=>{
     const{_newForDayId,...slot}=upd;
     slot.time = fromMins(snapTo(toMins(slot.time)));
