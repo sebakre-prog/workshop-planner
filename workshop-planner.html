@@ -52,7 +52,7 @@ const { createPortal } = await import("https://esm.sh/react-dom@18");
 const e = React.createElement;
 
 // ── Constants ─────────────────────────────────────────────────────────
-const VERSION    = "v2.7";
+const VERSION    = "v2.8";
 const PX_PER_MIN = 1.2;
 const SNAP       = 15;
 const DAY_START  = 7 * 60 + 30;
@@ -275,7 +275,7 @@ function DraggableSlot({ slot, onEdit, onDelete, onCopy, hasConflict, onDragEnd,
         e("div",{style:{display:"flex",alignItems:"baseline",gap:4,overflow:"hidden",whiteSpace:"nowrap"}},
           hasConflict&&e("span",{style:{fontSize:9,fontWeight:800,color:C.red,marginRight:2}},"⚠"),
           e("span",{style:{fontSize:10,fontWeight:800,color:ti.color,fontFamily:"monospace",flexShrink:0}},slot.time),
-          e("span",{style:{fontSize:11,fontWeight:700,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+          e("span",{style:{fontSize:11,fontWeight:700,color:C.text,overflow:"hidden",wordBreak:"break-word",whiteSpace:"normal",lineHeight:1.3}},
             slot.topic||e("em",{style:{color:C.muted,fontWeight:400}},"…")
           ),
           e("span",{style:{fontSize:9,color:C.muted,flexShrink:0}},`(${durLabel(Number(slot.duration))})`),
@@ -429,6 +429,62 @@ function exportToExcel(days) {
   XLSX.writeFile(wb,"Workshop_Agenda.xlsx");
 }
 
+// ── Mail Export ──────────────────────────────────────────────────────
+function MailExportModal({ days, onClose }) {
+  const lines = [];
+  lines.push("Workshop Agenda – Ambit Group × SQS");
+  lines.push("=".repeat(40));
+  lines.push("");
+  days.forEach(day => {
+    lines.push(`📅 ${day.label}${day.date ? " · " + fmtDate(day.date) : ""}`);
+    lines.push("-".repeat(35));
+    const sorted = [...day.slots].sort((a,b) => toMins(a.time) - toMins(b.time));
+    sorted.forEach(s => {
+      const ti = tinfo(s.type);
+      const endTime = fromMins(toMins(s.time) + Number(s.duration));
+      lines.push(`${s.time} – ${endTime}  ${s.topic || "(kein Titel)"} [${ti.label}]`);
+      if (s.goal)         lines.push(`   🎯 ${s.goal}`);
+      if (s.participants?.length) lines.push(`   👤 ${s.participants.join(", ")}`);
+      if (s.room)         lines.push(`   📍 ${s.room}`);
+    });
+    if (day.notes) {
+      lines.push("");
+      lines.push(`📝 Notizen: ${day.notes}`);
+    }
+    lines.push("");
+  });
+  const text = lines.join("\n");
+  const mailto = `mailto:?subject=Workshop%20Agenda%20%E2%80%93%20Ambit%20Group%20%C3%97%20SQS&body=${encodeURIComponent(text)}`;
+
+  return e("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000}},
+    e("div",{style:{background:"#fff",borderRadius:14,padding:28,width:620,maxWidth:"95vw",maxHeight:"85vh",display:"flex",flexDirection:"column",boxShadow:"0 24px 70px rgba(0,0,0,.28)"}},
+      e("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}},
+        e("div",{style:{display:"flex",alignItems:"center",gap:10}},
+          e("div",{style:{width:4,height:28,background:C.gold,borderRadius:2}}),
+          e("h3",{style:{margin:0,fontSize:17,color:C.navy,fontFamily:"Georgia,serif"}},"Agenda per Mail versenden")
+        ),
+        e("button",{onClick:onClose,style:{background:"none",border:"none",fontSize:22,cursor:"pointer",color:C.muted}},"×")
+      ),
+      e("div",{style:{fontSize:11,color:C.muted,marginBottom:10}},"Vorschau der Mail – du kannst den Text noch anpassen:"),
+      e("textarea",{
+        value:text, readOnly:true,
+        style:{flex:1,minHeight:300,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",
+          fontSize:11,fontFamily:"monospace",lineHeight:1.6,resize:"none",color:C.text,background:C.offWhite,outline:"none"}
+      }),
+      e("div",{style:{display:"flex",gap:10,marginTop:16}},
+        e("button",{
+          onClick:()=>{ navigator.clipboard?.writeText(text); },
+          style:{flex:1,padding:"10px 0",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.navy,fontSize:12,fontWeight:700,cursor:"pointer"}
+        },"📋 In Zwischenablage kopieren"),
+        e("a",{href:mailto,
+          style:{flex:1,padding:"10px 0",borderRadius:8,border:"none",background:C.navy,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",textAlign:"center",textDecoration:"none",display:"block"}
+        },"✉️ Mail-Programm öffnen"),
+        e("button",{onClick:onClose,style:{padding:"10px 16px",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.muted,fontSize:12,cursor:"pointer"}},"Schliessen")
+      )
+    )
+  );
+}
+
 // ── Print Preview ─────────────────────────────────────────────────────
 function PrintPreview({ days, onClose }) {
   const allMins=days.flatMap(d=>d.slots.flatMap(s=>[toMins(s.time),toMins(s.time)+Number(s.duration)]));
@@ -448,9 +504,9 @@ function PrintPreview({ days, onClose }) {
       // Time range: always visible
       e("div",{style:{fontSize:9,fontWeight:700,color:ti.color,fontFamily:"monospace",whiteSpace:"nowrap",lineHeight:1.3}},
         `${slot.time} – ${endTime}`),
-      // Title: large and prominent, always shown
-      e("div",{style:{fontSize:13,fontWeight:700,color:"#1e293b",lineHeight:1.25,overflow:"hidden",
-        display:"-webkit-box",WebkitLineClamp:height>60?3:height>40?2:1,WebkitBoxOrient:"vertical"}},
+      // Title: font size adapts to available height
+      e("div",{style:{fontSize:height>35?13:height>22?10:8,fontWeight:700,color:"#1e293b",lineHeight:1.25,overflow:"hidden",
+        display:"-webkit-box",WebkitLineClamp:height>60?3:height>35?2:1,WebkitBoxOrient:"vertical"}},
         slot.topic||"–")
     );
   };
@@ -559,6 +615,7 @@ function App() {
   const days = history.present;
   const [editingSlot, setEditingSlot] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [showMailExport, setShowMailExport] = useState(false);
   const [saveStatus, setSaveStatus] = useState("");
   const [filterTypes, setFilterTypes] = useState([]);
   const [filterPerson, setFilterPerson] = useState("");
@@ -654,6 +711,7 @@ function App() {
         e("span",{style:{fontSize:9,color:"rgba(255,255,255,.35)"}},"Drag & Drop · Klick zum Bearbeiten"),
         e("button",{onClick:()=>setShowPreview(true),style:{background:"rgba(255,255,255,.12)",border:"1px solid rgba(255,255,255,.25)",borderRadius:8,color:"#fff",fontSize:11,fontWeight:700,padding:"7px 14px",cursor:"pointer"}},"👁 Vorschau"),
         e("button",{onClick:()=>exportToExcel(days),style:{background:"rgba(255,255,255,.12)",border:"1px solid rgba(255,255,255,.25)",borderRadius:8,color:"#fff",fontSize:11,fontWeight:700,padding:"7px 14px",cursor:"pointer"}},"⬇ Excel"),
+        e("button",{onClick:()=>setShowMailExport(true),style:{background:"rgba(255,255,255,.12)",border:"1px solid rgba(255,255,255,.25)",borderRadius:8,color:"#fff",fontSize:11,fontWeight:700,padding:"7px 14px",cursor:"pointer"}},"✉️ Mail"),
         e("button",{onClick:addDay,style:{background:C.gold,border:"none",borderRadius:8,color:C.navy,fontSize:11,fontWeight:700,padding:"7px 14px",cursor:"pointer"}},"+ Tag")
       )
     ),
@@ -695,6 +753,7 @@ function App() {
     ),
 
     showPreview&&e(PrintPreview,{days,onClose:()=>setShowPreview(false)}),
+    showMailExport&&e(MailExportModal,{days,onClose:()=>setShowMailExport(false)}),
     editingSlot&&e(SlotModal,{slot:editingSlot,onSave:saveSlot,onClose:()=>setEditingSlot(null),knownNames,
       allSlots:(()=>{const dayId=editingSlot._newForDayId||days.find(d=>d.slots.some(s=>s.id===editingSlot.id))?.id;const day=days.find(d=>d.id===dayId);return day?day.slots:[];})()})
   );
