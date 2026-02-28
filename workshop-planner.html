@@ -496,12 +496,12 @@ function PrintPreview({ days, onClose }) {
           )
         ),
         e("tbody", {},
-          ...allTimes.map(time => {
+          ...allTimes.map((time, ti) => {
             const cells = days.flatMap((day, di) => {
               const cm = cellMaps[di];
               const row = cm[time] || { tech: null, org: null, wide: null };
               if (row.wide) {
-                if (row.wide.rowSpan === 0) return []; // skip both cols
+                if (row.wide.rowSpan === 0) return []; // skip – covered by rowSpan above
                 return [e(SlotCell, { key: day.id + "-w", entry: row.wide, colSpan: 2 })];
               }
               const techCell = row.tech?.rowSpan === 0 ? [] : [e(SlotCell, { key: day.id + "-t", entry: row.tech })];
@@ -509,8 +509,24 @@ function PrintPreview({ days, onClose }) {
               return [...techCell, ...orgCell];
             });
             if (cells.length === 0) return null;
+
+            // Check if this time row is an "interior" row of some slot
+            // i.e. every day has all its cols covered by rowSpan=0
+            const allCovered = days.every((day, di) => {
+              const cm = cellMaps[di];
+              const row = cm[time] || { tech: null, org: null, wide: null };
+              if (row.wide) return row.wide.rowSpan === 0;
+              return (row.tech?.rowSpan === 0 || !row.tech) && (row.org?.rowSpan === 0 || !row.org);
+            });
+
+            // Only show time label on rows that have at least one slot starting
+            const showTime = !allCovered || cells.length > 0;
+
             return e("tr", { key: time },
-              e("td", { style: { background: C.offWhite, textAlign: "right", padding: "6px 8px", fontSize: 10, fontFamily: "monospace", fontWeight: 700, color: C.navy, border: `1px solid ${C.border}`, whiteSpace: "nowrap", verticalAlign: "top" } }, time),
+              e("td", { style: { background: C.offWhite, textAlign: "right", padding: "6px 8px",
+                fontSize: 10, fontFamily: "monospace", fontWeight: 700, color: allCovered ? C.border : C.navy,
+                border: `1px solid ${C.border}`, whiteSpace: "nowrap", verticalAlign: "top" } }, 
+                allCovered ? "" : time),
               ...cells
             );
           }).filter(Boolean)
