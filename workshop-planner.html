@@ -413,62 +413,80 @@ function exportToExcel(days) {
 }
 
 // ─── Print Preview ────────────────────────────────────────────────────
+const VERSION = "v1.4";
+const PX15 = 28; // pixels per 15 minutes
+
 function PrintPreview({ days, onClose }) {
-  // Build all 15-min time slots that are covered by any slot
-  const allTimes = [...new Set(days.flatMap(d => d.slots.flatMap(s => {
-    const times = [];
-    for (let m = toMins(s.time); m < toMins(s.time) + Number(s.duration); m += 15)
-      times.push(fromMins(m));
-    return times;
-  })))].sort();
+  // Find earliest and latest times across all slots
+  const allMins = days.flatMap(d => d.slots.flatMap(s => [toMins(s.time), toMins(s.time) + Number(s.duration)]));
+  const minTime = Math.floor(Math.min(...allMins) / 15) * 15;
+  const maxTime = Math.ceil(Math.max(...allMins) / 15) * 15;
+  const totalH = (maxTime - minTime) / 15 * PX15;
 
-  // For each day+stream, compute which cells are "occupied" by a rowSpan slot
-  // Returns: { time -> { slot, rowSpan, render } }
-  // render=true means: this is the first cell (show content + rowSpan)
-  // render=false means: skip this cell (already covered by rowSpan above)
-  const buildCellMap = (day) => {
-    const map = {}; // time -> { tech: ..., org: ..., wide: ... }
-    allTimes.forEach(t => { map[t] = { tech: null, org: null, wide: null }; });
+  // Hour markers
+  const hours = [];
+  for (let m = Math.ceil(minTime / 60) * 60; m <= maxTime; m += 60) hours.push(m);
 
-    day.slots.forEach(s => {
-      const startMin = toMins(s.time);
-      const slots15 = Math.ceil(Number(s.duration) / 15);
-      const stream = isWide(s) ? "wide" : s.type === "tech" ? "tech" : "org";
-      for (let i = 0; i < slots15; i++) {
-        const t = fromMins(startMin + i * 15);
-        if (!map[t]) map[t] = { tech: null, org: null, wide: null };
-        map[t][stream] = { slot: s, rowSpan: i === 0 ? slots15 : 0 };
-      }
-    });
-    return map;
+  // Render a single slot block
+  const SlotBlock = ({ slot, left, width }) => {
+    const ti = tinfo(slot.type);
+    const top = (toMins(slot.time) - minTime) / 15 * PX15;
+    const height = Number(slot.duration) / 15 * PX15;
+    return e("div", { style: {
+      position: "absolute", top, left, width, height: height - 2,
+      background: ti.bg, borderLeft: `3px solid ${ti.color}`,
+      borderRadius: 4, padding: "3px 6px", overflow: "hidden",
+      boxSizing: "border-box", boxShadow: "0 1px 3px rgba(0,0,0,.1)"
+    }},
+      e("div", { style: { fontSize: 9, fontWeight: 800, color: ti.color, fontFamily: "monospace", whiteSpace: "nowrap" } },
+        slot.time, e("span", { style: { fontWeight: 400, color: "#94a3b8", marginLeft: 3 } }, `${slot.duration}m`)),
+      height > 30 && e("div", { style: { fontSize: 10, fontWeight: 700, color: "#1e293b", lineHeight: 1.2, marginTop: 1, overflow: "hidden" } }, slot.topic || "–"),
+      height > 45 && slot.participants?.length > 0 && e("div", { style: { fontSize: 8, color: "#64748b", marginTop: 2 } }, `👤 ${slot.participants.join(", ")}`),
+      height > 55 && slot.room && e("div", { style: { fontSize: 8, color: "#64748b" } }, `📍 ${slot.room}`)
+    );
   };
 
-  const cellMaps = days.map(buildCellMap);
-
-  const SlotCell = ({ entry, colSpan = 1 }) => {
-    if (!entry) return e("td", { style: { background: "#fafbff", border: `1px solid ${C.border}`, minWidth: 100 } });
-    if (entry.rowSpan === 0) return null; // skip – covered by rowSpan above
-    const s = entry.slot, ti = tinfo(s.type);
-    return e("td", {
-      rowSpan: entry.rowSpan, colSpan,
-      style: { background: ti.bg, borderLeft: `3px solid ${ti.color}`, border: `1px solid ${C.border}`,
-        padding: "5px 8px", verticalAlign: "top", minWidth: 100 }
-    },
-      e("div", { style: { fontSize: 10, fontWeight: 800, color: ti.color, fontFamily: "monospace" } },
-        s.time, " ", e("span", { style: { fontWeight: 400, color: C.muted } }, `(${Number(s.duration)} min)`)),
-      e("div", { style: { fontSize: 11, fontWeight: 700, color: C.text, marginTop: 1 } }, s.topic || "–"),
-      s.participants?.length > 0 && e("div", { style: { fontSize: 9, color: C.muted, marginTop: 2 } }, `👤 ${s.participants.join(", ")}`),
-      s.room && e("div", { style: { fontSize: 9, color: C.muted } }, `📍 ${s.room}`)
+  // Day column: render all slots with absolute positioning
+  const DayCol = ({ day }) => {
+    const techSlots = day.slots.filter(s => s.type === "tech");
+    const orgSlots  = day.slots.filter(s => s.type === "org");
+    const wideSlots = day.slots.filter(s => isWide(s));
+    const half = "calc(50% - 1px)";
+    return e("td", { style: { verticalAlign: "top", padding: 0, border: `1px solid ${C.border}`, width: 280 } },
+      e("div", { style: { position: "relative", height: totalH, width: "100%" } },
+        // Hour grid lines
+        ...hours.map(m => e("div", { key: m, style: {
+          position: "absolute", top: (m - minTime) / 15 * PX15, left: 0, right: 0,
+          height: 1, background: "rgba(26,43,95,.08)", pointerEvents: "none"
+        }})),
+        // Half-hour lines
+        ...hours.map(m => e("div", { key: m + 30, style: {
+          position: "absolute", top: (m + 30 - minTime) / 15 * PX15, left: 0, right: 0,
+          height: 1, background: "rgba(26,43,95,.04)", pointerEvents: "none"
+        }})),
+        // Center divider
+        e("div", { style: { position: "absolute", top: 0, bottom: 0, left: "50%", width: 1, background: C.border, pointerEvents: "none" } }),
+        // Wide slots (full width)
+        ...wideSlots.map(s => e(SlotBlock, { key: s.id, slot: s, left: 2, width: "calc(100% - 4px)" })),
+        // Tech slots (left half)
+        ...techSlots.map(s => e(SlotBlock, { key: s.id, slot: s, left: 2, width: `calc(50% - 3px)` })),
+        // Org slots (right half)
+        ...orgSlots.map(s => e(SlotBlock, { key: s.id, slot: s, left: "calc(50% + 1px)", width: `calc(50% - 3px)` }))
+      )
     );
   };
 
   return e("div", { style: { position: "fixed", inset: 0, zIndex: 2000, background: "#fff", display: "flex", flexDirection: "column", overflow: "auto" } },
+    // Toolbar
     e("div", { style: { background: C.navy, padding: "0 18px", height: 46, display: "flex", alignItems: "center", gap: 12, flexShrink: 0, position: "sticky", top: 0, zIndex: 10, boxShadow: "0 2px 8px rgba(0,0,0,.2)" } },
       e("div", { style: { color: "#fff", fontSize: 13, fontWeight: 700, fontFamily: "Georgia,serif" } }, "Workshop Vorschau"),
+      e("div", { style: { fontSize: 9, color: "rgba(255,255,255,.4)", background: "rgba(255,255,255,.08)", borderRadius: 4, padding: "2px 8px" } }, VERSION),
       e("div", { style: { background: "rgba(200,149,42,.2)", border: `1px solid ${C.gold}`, borderRadius: 6, padding: "3px 10px", color: C.goldLight, fontSize: 10 } }, "📸 Screenshot: Snipping Tool (Win+Shift+S) · Mac: Cmd+Shift+4"),
       e("button", { onClick: onClose, style: { marginLeft: "auto", background: "rgba(255,255,255,.12)", border: "1px solid rgba(255,255,255,.25)", borderRadius: 7, color: "#fff", fontSize: 11, padding: "6px 14px", cursor: "pointer" } }, "✕ Schliessen")
     ),
+    // Content
     e("div", { style: { padding: "20px 24px 40px" } },
+      // Header
       e("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 16, paddingBottom: 10, borderBottom: `2.5px solid ${C.navy}` } },
         e("div", { style: { width: 5, height: 26, background: C.gold, borderRadius: 2, flexShrink: 0 } }),
         e("div", {},
@@ -481,55 +499,43 @@ function PrintPreview({ days, onClose }) {
             e("span", { style: { fontSize: 9, color: C.muted, fontWeight: 600 } }, t.label)))
         )
       ),
-      e("table", { style: { borderCollapse: "collapse", width: "100%", fontSize: 11 } },
+      // Timeline table
+      e("table", { style: { borderCollapse: "collapse", tableLayout: "fixed" } },
         e("thead", {},
           e("tr", {},
-            e("th", { style: { background: C.offWhite, width: 56, padding: "6px 8px", border: `1px solid ${C.border}`, fontSize: 10, color: C.muted, fontWeight: 700, textAlign: "center" } }, "Zeit"),
-            ...days.map(day => e("th", { key: day.id, colSpan: 2, style: { background: C.navy, color: "#fff", padding: "7px 10px", fontSize: 12, fontWeight: 700, fontFamily: "Georgia,serif", border: `1px solid ${C.border}`, textAlign: "center" } }, day.label))
+            e("th", { style: { width: 44, background: C.offWhite, border: `1px solid ${C.border}` } }),
+            ...days.map(day => e("th", { key: day.id, colSpan: 1, style: {
+              width: 280, background: C.navy, color: "#fff", padding: "7px 10px",
+              fontSize: 13, fontWeight: 700, fontFamily: "Georgia,serif",
+              border: `1px solid ${C.border}`, textAlign: "center"
+            } }, day.label))
           ),
           e("tr", {},
             e("th", { style: { background: C.offWhite, border: `1px solid ${C.border}` } }),
-            ...days.flatMap(day => [
-              e("th", { key: day.id + "-t", style: { background: "#EEF2FF", color: C.navy, padding: "4px 8px", fontSize: 9, fontWeight: 700, border: `1px solid ${C.border}`, textAlign: "center" } }, "TECHNISCH"),
-              e("th", { key: day.id + "-o", style: { background: "#FFF7ED", color: C.gold, padding: "4px 8px", fontSize: 9, fontWeight: 700, border: `1px solid ${C.border}`, textAlign: "center" } }, "ORGANISATORISCH")
-            ])
+            ...days.map(day => e("th", { key: day.id, style: {
+              border: `1px solid ${C.border}`, padding: 0
+            } },
+              e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr" } },
+                e("div", { style: { background: "#EEF2FF", color: C.navy, fontSize: 8, fontWeight: 700, textAlign: "center", padding: "3px 0", letterSpacing: .5 } }, "TECHNISCH"),
+                e("div", { style: { background: "#FFF7ED", color: C.gold, fontSize: 8, fontWeight: 700, textAlign: "center", padding: "3px 0", letterSpacing: .5 } }, "ORGANISATORISCH")
+              )
+            ))
           )
         ),
         e("tbody", {},
-          ...allTimes.map((time, ti) => {
-            const cells = days.flatMap((day, di) => {
-              const cm = cellMaps[di];
-              const row = cm[time] || { tech: null, org: null, wide: null };
-              if (row.wide) {
-                if (row.wide.rowSpan === 0) return []; // skip – covered by rowSpan above
-                return [e(SlotCell, { key: day.id + "-w", entry: row.wide, colSpan: 2 })];
-              }
-              const techCell = row.tech?.rowSpan === 0 ? [] : [e(SlotCell, { key: day.id + "-t", entry: row.tech })];
-              const orgCell  = row.org?.rowSpan  === 0 ? [] : [e(SlotCell, { key: day.id + "-o", entry: row.org  })];
-              return [...techCell, ...orgCell];
-            });
-            if (cells.length === 0) return null;
-
-            // Check if this time row is an "interior" row of some slot
-            // i.e. every day has all its cols covered by rowSpan=0
-            const allCovered = days.every((day, di) => {
-              const cm = cellMaps[di];
-              const row = cm[time] || { tech: null, org: null, wide: null };
-              if (row.wide) return row.wide.rowSpan === 0;
-              return (row.tech?.rowSpan === 0 || !row.tech) && (row.org?.rowSpan === 0 || !row.org);
-            });
-
-            // Only show time label on rows that have at least one slot starting
-            const showTime = !allCovered || cells.length > 0;
-
-            return e("tr", { key: time },
-              e("td", { style: { background: C.offWhite, textAlign: "right", padding: "6px 8px",
-                fontSize: 10, fontFamily: "monospace", fontWeight: 700, color: allCovered ? C.border : C.navy,
-                border: `1px solid ${C.border}`, whiteSpace: "nowrap", verticalAlign: "top" } }, 
-                allCovered ? "" : time),
-              ...cells
-            );
-          }).filter(Boolean)
+          e("tr", {},
+            // Time ruler column
+            e("td", { style: { verticalAlign: "top", padding: 0, background: C.offWhite, border: `1px solid ${C.border}`, width: 44 } },
+              e("div", { style: { position: "relative", height: totalH } },
+                ...hours.map(m => e("div", { key: m, style: {
+                  position: "absolute", top: (m - minTime) / 15 * PX15 - 7,
+                  right: 4, fontSize: 9, color: C.muted, fontFamily: "monospace", fontWeight: 600, whiteSpace: "nowrap"
+                } }, `${String(Math.floor(m / 60)).padStart(2, "0")}:00`))
+              )
+            ),
+            // Day columns
+            ...days.map(day => e(DayCol, { key: day.id, day }))
+          )
         )
       )
     )
