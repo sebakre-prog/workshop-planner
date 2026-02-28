@@ -51,7 +51,7 @@ const { useState, useRef, useCallback, useEffect, useReducer } = React;
 const e = React.createElement;
 
 // ── Constants ─────────────────────────────────────────────────────────
-const VERSION    = "v2.2";
+const VERSION    = "v2.3";
 const PX_PER_MIN = 1.5;
 const SNAP       = 15;
 const DAY_START  = 7 * 60 + 30;
@@ -188,7 +188,7 @@ function SlotModal({ slot, onSave, onClose, allSlots, knownNames=[] }) {
       e("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}},
         e("div",{},e(FL,{},"Startzeit"),e("select",{value:form.time,onChange:ev=>set("time",ev.target.value),style:selSt},...timeOptions.map(t=>e("option",{key:t,value:t},t)))),
         e("div",{},e(FL,{},"Dauer"),e("select",{value:form.duration,onChange:ev=>set("duration",Number(ev.target.value)),style:selSt},
-          ...[15,30,45,60,75,90,105,120,150,180,210,240,270,300,360,420,480].map(d=>e("option",{key:d,value:d},durLabel(d)))))
+          ...Array.from({length:32},(_,i)=>(i+1)*15).map(d=>e("option",{key:d,value:d},durLabel(d)))))
       ),
       e(FL,{},"Thema / Titel"),
       e("input",{value:form.topic,onChange:ev=>set("topic",ev.target.value),placeholder:"z.B. Anforderungen Auditereignis",style:inpSt}),
